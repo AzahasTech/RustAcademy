@@ -49,4 +49,26 @@ export class NotificationsService {
       marketing_updates: false,
     };
   }
+
+  sendNewDeviceNotification(userId: string, deviceInfo: string): void {
+    this.create({
+      userId,
+      title: 'New device login detected',
+      message: `A new device was used to access your account: ${deviceInfo}. If this wasn't you, please secure your account immediately.`,
+      type: 'security_alert',
+    });
+  }
+
+  sendPrivilegeChangeNotification(
+    userId: string,
+    previousRole: string,
+    newRole: string,
+  ): void {
+    this.create({
+      userId,
+      title: 'Account privilege changed',
+      message: `Your account role was changed from ${previousRole} to ${newRole}.`,
+      type: 'account_alert',
+    });
+  }
 }
