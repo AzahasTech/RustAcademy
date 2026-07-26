@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { AnalyticsEvent } from '../analytics/analytics.entity';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { RewardsService } from '../rewards/rewards.service';
+import { DatabaseService } from '../database/database.service';
 
 export interface DailyActivitySummary {
   date: string;
@@ -48,6 +49,19 @@ export interface DailySummaryReport {
   progress: DailyActivityProgress;
 }
 
+export interface CouponRedemptionReport {
+  totalCoupons: number;
+  totalRedemptions: number;
+  totalDiscountApplied: number;
+  activeCoupons: number;
+  expiredCoupons: number;
+  redemptionsByCoupon: Array<{
+    code: string;
+    redemptions: number;
+    totalDiscount: number;
+  }>;
+}
+
 interface DailyBucket {
   totalEvents: number;
   firstActivityAt: string | null;
@@ -60,6 +74,7 @@ export class ReportsService {
   constructor(
     private readonly analyticsService: AnalyticsService,
     private readonly rewardsService: RewardsService,
+    private readonly databaseService?: DatabaseService,
   ) {}
 
   async getDailySummaryReport(
@@ -87,6 +102,46 @@ export class ReportsService {
       },
       summaries,
       progress: this.buildProgress(userId, filteredEvents, fullSummaries),
+    };
+  }
+
+  async getCouponRedemptionReport(): Promise<CouponRedemptionReport> {
+    if (!this.databaseService) {
+      return {
+        totalCoupons: 0,
+        totalRedemptions: 0,
+        totalDiscountApplied: 0,
+        activeCoupons: 0,
+        expiredCoupons: 0,
+        redemptionsByCoupon: [],
+      };
+    }
+
+    const coupons = await this.databaseService.getAllCoupons();
+    const redemptions = await this.databaseService.getAllRedemptions(1000);
+
+    const redemptionsByCoupon: CouponRedemptionReport['redemptionsByCoupon'] = [];
+    let totalDiscountApplied = 0;
+
+    for (const coupon of coupons) {
+      const couponRedemptions = redemptions.filter((r) => r.couponId === coupon.id);
+      const totalDiscount = couponRedemptions.reduce((sum, r) => sum + r.discountApplied, 0);
+      totalDiscountApplied += totalDiscount;
+      redemptionsByCoupon.push({
+        code: coupon.code,
+        redemptions: couponRedemptions.length,
+        totalDiscount,
+      });
+    }
+
+    const now = new Date();
+    return {
+      totalCoupons: coupons.length,
+      totalRedemptions: redemptions.length,
+      totalDiscountApplied,
+      activeCoupons: coupons.filter((c) => c.isActive && (!c.expiresAt || c.expiresAt > now)).length,
+      expiredCoupons: coupons.filter((c) => c.expiresAt && c.expiresAt <= now).length,
+      redemptionsByCoupon,
     };
   }
 
