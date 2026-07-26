@@ -16,6 +16,13 @@ export enum EventType {
   TUTORIAL_COMPLETED = 'tutorial_completed',
   REWARD_CLAIMED = 'reward_claimed',
   LEADERBOARD_VIEWED = 'leaderboard_viewed',
+  API_KEY_CREATED = 'api_key_created',
+  API_KEY_REVOKED = 'api_key_revoked',
+  API_KEY_USED = 'api_key_used',
+  API_KEY_ANOMALY = 'api_key_anomaly',
+  SESSION_REVOKED = 'session_revoked',
+  DEVICE_BOUND = 'device_bound',
+  PRIVILEGE_CHANGED = 'privilege_changed',
 }
 
 @Injectable()

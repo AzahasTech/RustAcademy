@@ -30,6 +30,12 @@ export interface DailyActivityProgress {
     currentStreak: number;
     lastActivityDate: string | null;
   };
+  apiKeyUsage?: {
+    totalKeys: number;
+    activeKeys: number;
+    totalUsageEvents: number;
+    anomaliesDetected: number;
+  };
 }
 
 export interface DailySummaryReport {
@@ -149,6 +155,16 @@ export class ReportsService {
       currentActiveStreak: this.getCurrentActiveStreak(summaries),
       longestActiveStreak: this.getLongestActiveStreak(summaries),
       rewards,
+      apiKeyUsage: this.getApiKeyUsageSummary(userId),
+    };
+  }
+
+  private getApiKeyUsageSummary(userId: string): DailyActivityProgress['apiKeyUsage'] {
+    return {
+      totalKeys: 0,
+      activeKeys: 0,
+      totalUsageEvents: 0,
+      anomaliesDetected: 0,
     };
   }
 

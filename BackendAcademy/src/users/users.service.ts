@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 
 export interface UserPreferencesDto {
   learnerPreferences?: Record<string, unknown>;
@@ -11,9 +11,19 @@ export interface UserPreferencesResponse {
   tutorPreferences?: Record<string, unknown>;
 }
 
+export interface UserPrivilegeChangeEvent {
+  userId: string;
+  previousRole: string;
+  newRole: string;
+  changedBy: string;
+  timestamp: Date;
+}
+
 @Injectable()
 export class UsersService {
+  private readonly logger = new Logger(UsersService.name);
   private readonly preferencesByUser = new Map<string, UserPreferencesResponse>();
+  private readonly privilegeChangeLog: UserPrivilegeChangeEvent[] = [];
 
   async updatePreferences(
     userId: string,
@@ -40,5 +50,31 @@ export class UsersService {
 
     this.preferencesByUser.set(userId, next);
     return next;
+  }
+
+  async onUserPrivilegeChange(
+    userId: string,
+    previousRole: string,
+    newRole: string,
+    changedBy: string,
+  ): Promise<void> {
+    const event: UserPrivilegeChangeEvent = {
+      userId,
+      previousRole,
+      newRole,
+      changedBy,
+      timestamp: new Date(),
+    };
+    this.privilegeChangeLog.push(event);
+    this.logger.warn(
+      `User ${userId} privilege changed from ${previousRole} to ${newRole} by ${changedBy}`,
+    );
+  }
+
+  getPrivilegeChangeLog(userId?: string): UserPrivilegeChangeEvent[] {
+    if (userId) {
+      return this.privilegeChangeLog.filter((e) => e.userId === userId);
+    }
+    return this.privilegeChangeLog;
   }
 }
