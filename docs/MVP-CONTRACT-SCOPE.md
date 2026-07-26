@@ -6,6 +6,10 @@ This document defines the Soroban smart contract scope for the RustAcademy Minim
 
 ---
 
+
+
+
+
 ## 1. Candidate Modules & MVP Selection Matrix
 
 The table below outlines the Wave 4 contract scope, evaluates each module's complexity and risk, and specifies whether it is included in the MVP on-chain scope.
