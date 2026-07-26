@@ -27,6 +27,20 @@ export class UpdateCourseDto {
   duration?: number;
 
   @IsOptional()
+  @IsString()
+  category?: string;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  categories?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  tags?: string[];
+
+  @IsOptional()
   @IsArray()
   @IsString({ each: true })
   prerequisites?: string[];
@@ -43,4 +57,12 @@ export class UpdateCourseDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @IsOptional()
+  @IsString()
+  changeNote?: string;
+
+  @IsOptional()
+  @IsString()
+  revisionAuthor?: string;
 }

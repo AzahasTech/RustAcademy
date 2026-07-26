@@ -102,6 +102,26 @@ export interface CancellationToken {
 }
 
 /**
+ * Export-specific retry state - attached to Job metadata for DLQ enrichment
+ */
+export interface ExportRetryState {
+  /** Current attempt number (1-indexed) */
+  attemptCount: number;
+  /** Maximum retry attempts allowed */
+  maxRetries: number;
+  /** Exponential backoff delays in milliseconds (1m, 5m, 30m) */
+  backoffDelaysMs: number[];
+  /** Calculated delay for the next retry in milliseconds */
+  nextBackoffDelayMs: number;
+  /** Timestamp of the last failure */
+  lastFailureAt: string;
+  /** Error message from the last failure */
+  lastError: string;
+  /** Whether the job has been moved to DLQ */
+  inDlq: boolean;
+}
+
+/**
  * Job handler interface - implemented by each job type handler
  */
 export interface JobHandler<TPayload = unknown> {

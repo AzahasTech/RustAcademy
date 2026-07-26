@@ -1,3 +1,14 @@
+/**
+ * Rate limits are applied per request based on a resolved group.
+ * Group resolution order (see CustomThrottlerGuard):
+ *   1. An explicit @RateLimitGroupTag(...) decorator on the route, if present.
+ *   2. Requests to a /webhooks path → "webhooks" group.
+ *   3. Requests with a resolvable user ID or API key → "authenticated" group.
+ *   4. Everything else → "public" group.
+ *
+ * Note: the API_KEYS env var (bcrypt-hashed keys for API key auth) does NOT
+ * affect these limits — it's a separate, unrelated auth mechanism.
+ */
 export type RateLimitGroup = "public" | "authenticated" | "webhooks";
 export type RateLimitWindow = "burst" | "sustained";
 export type RateLimitKeyType = "user_id" | "api_key" | "ip";
@@ -21,6 +32,12 @@ export type RateLimitConfig = {
   keyOrder: RateLimitKeyType[];
 };
 
+/**
+ * Once a request's rate-limit group is resolved, this determines which
+ * identity is used to track its usage against the group's limits — the
+ * first available identity type in this order wins. Configurable via
+ * RATE_LIMIT_KEY_ORDER (comma-separated, e.g. "api_key,user_id,ip").
+ */
 const DEFAULT_KEY_ORDER: RateLimitKeyType[] = ["user_id", "api_key", "ip"];
 
 function parseKeyOrder(raw?: string): RateLimitKeyType[] {
@@ -89,15 +106,25 @@ export const throttlerConfig: RateLimitConfig = {
   keyOrder: parseKeyOrder(process.env["RATE_LIMIT_KEY_ORDER"]),
 };
 
-export const throttlerModuleProfiles = [
-  {
-    name: THROTTLER_BURST_NAME,
-    ttl: throttlerConfig.groups.public.burst.ttlMs,
-    limit: throttlerConfig.groups.public.burst.limit,
-  },
-  {
-    name: THROTTLER_SUSTAINED_NAME,
-    ttl: throttlerConfig.groups.public.sustained.ttlMs,
-    limit: throttlerConfig.groups.public.sustained.limit,
-  },
-];
+function buildThrottlerProfiles(): { name: string; ttl: number; limit: number }[] {
+  const profiles: { name: string; ttl: number; limit: number }[] = [];
+  const groups: RateLimitGroup[] = ["public", "authenticated", "webhooks"];
+
+  for (const group of groups) {
+    const config = throttlerConfig.groups[group];
+    profiles.push({
+      name: `${group}_${THROTTLER_BURST_NAME}`,
+      ttl: config.burst.ttlMs,
+      limit: config.burst.limit,
+    });
+    profiles.push({
+      name: `${group}_${THROTTLER_SUSTAINED_NAME}`,
+      ttl: config.sustained.ttlMs,
+      limit: config.sustained.limit,
+    });
+  }
+
+  return profiles;
+}
+
+export const throttlerModuleProfiles = buildThrottlerProfiles();

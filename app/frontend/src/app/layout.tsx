@@ -1,12 +1,13 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Header } from "@/components/Header";
 import { NotificationCenterProvider } from "@/components/NotificationCenterProvider";
 import { ErrorReportingShell } from "@/components/ErrorReportingShell";
+import { PWAHandler } from "@/components/PWAHandler";
 import "./globals.css";
 
 const siteUrl =
   process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/$/, "") ||
-  "https:// RustAcademy.to";
+  "https://RustAcademy.to";
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
@@ -16,6 +17,11 @@ export const metadata: Metadata = {
   },
   description: "Privacy-focused payments on Stellar",
   applicationName: " RustAcademy",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "RustAcademy",
+  },
   keywords: ["Stellar", "payments", "crypto", "XLM", "USDC", "payment link"],
   authors: [{ name: "Pulsefy" }],
   creator: "Pulsefy",
@@ -45,6 +51,12 @@ export const metadata: Metadata = {
     index: true,
     follow: true,
   },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#0a0a0a",
+  width: "device-width",
+  initialScale: 1,
 };
 
 export default function RootLayout({
@@ -83,6 +95,7 @@ export default function RootLayout({
               </div>
             </div>
           </footer>
+          <PWAHandler />
         </NotificationCenterProvider>
       </body>
     </html>

@@ -14,6 +14,8 @@ mod escrow_id;
 #[cfg(test)]
 mod escrow_id_test;
 mod events;
+#[cfg(test)]
+mod events_test;
 mod fee;
 mod fee_router;
 #[cfg(test)]
@@ -31,6 +33,7 @@ pub mod nonce;
 mod nonce_test;
 mod oracle;
 mod privacy;
+mod legacy_privacy;
 #[cfg(test)]
 mod role_test;
 mod stealth;
@@ -49,6 +52,7 @@ mod upgrade_test;
 
 use errors::RustAcademyError;
 use storage::*;
+use privacy::{add_privacy_history, get_privacy_history, get_privacy_level, set_privacy_level};
 use types::{
     ContractHealth, DeploymentMetadata, DisputeExpiryAction, EscrowEntry,
     EscrowOperationEstimate, EscrowOperationLimits, EscrowStatus, FeatureFlags, FeeConfig,
@@ -818,6 +822,16 @@ impl RustAcademyContract {
         )
     }
 
+    /// Validate all static event schema definitions against canonical rules (Issue #312).
+    ///
+    /// Returns `Ok(true)` if all schemas in `EVENT_SCHEMAS` satisfy canonical
+    /// uniqueness, topic prefix, sorted payload keys, mandatory replay fields, and
+    /// versioning constraints.
+    pub fn validate_event_schemas(_env: Env) -> Result<bool, RustAcademyError> {
+        events::validate_event_schemas().map_err(|_| RustAcademyError::InternalError)?;
+        Ok(true)
+    }
+
     /// Return the current granular pause bitmask.
     ///
     /// See [`crate::storage::PauseFlag`] for the bit definitions.  A value of `0`
@@ -986,7 +1000,24 @@ impl RustAcademyContract {
         hook::get_registered_hooks(&env)
     }
 
-    /// Set the fee configuration (**Admin only**).
+    /// Set the global fee configuration (**Admin or Operator only**).
+    ///
+    /// This is the fallback fee applied to all tokens that don't have a per-asset override.
+    /// The fee is expressed in basis points (1 = 0.01%, 100 = 1%, 10000 = 100%).
+    ///
+    /// # Priority Order
+    /// Fees are resolved in this order:
+    /// 1. Per-asset override (via [`set_per_asset_fee`]) if configured for the token
+    /// 2. Oracle dynamic pricing (if configured and price is fresh)
+    /// 3. Global static config (this method)
+    ///
+    /// # Examples
+    /// ```ignore
+    /// client.set_fee_config(&admin, &FeeConfig {
+    ///     fee_bps: 200,  // 2%
+    ///     schema_version: FEE_CONFIG_SCHEMA_VERSION,
+    /// })?;
+    /// ```
     pub fn set_fee_config(
         env: Env,
         caller: Address,
@@ -996,7 +1027,61 @@ impl RustAcademyContract {
         admin::set_fee_config(&env, &caller, config)
     }
 
-    /// Set per-asset fee configuration (**Admin or Operator only**).
+    /// Set per-asset fee configuration for a specific token (**Admin or Operator only**).
+    ///
+    /// Per-asset overrides take precedence over global fees and oracle pricing for the
+    /// specified token only. This allows fine-grained control (e.g., lower fees for stablecoins,
+    /// higher for volatile assets, or zero fees for specific tokens).
+    ///
+    /// A `fee_bps` of 0 explicitly disables fees for that token, even if global config is non-zero.
+    ///
+    /// # Fee Distribution
+    ///
+    /// When a per-asset config is set, fees can be split into three portions:
+    /// - **Arbiter portion**: `arbiter_bps` or `arbiter_fee` (when arbiter is present in payout)
+    /// - **Platform portion**: `platform_fee` (to platform wallet)
+    /// - **Collector portion**: `collector_fee` (to active fee collector)
+    ///
+    /// **Legacy arbiter_bps** (simpler):
+    /// - `arbiter_bps` = percentage of total fee for arbiter (0-10000)
+    /// - Remainder goes to collector
+    ///
+    /// **Explicit ratios** (more flexible):
+    /// - `arbiter_fee`, `platform_fee`, `collector_fee` = FeeRatio with numerator/denominator
+    /// - When any explicit ratio is set, the legacy `arbiter_bps` is ignored
+    /// - Ratios must sum to ≤ 1.0 or the function returns `FeeSplitExceedsTotal`
+    ///
+    /// # Examples
+    ///
+    /// Simple per-asset override (2% fee for XLM):
+    /// ```ignore
+    /// client.set_per_asset_fee(&admin, &xlm_token, &PerAssetFeeConfig {
+    ///     fee_bps: 200,
+    ///     arbiter_bps: 0,
+    ///     ..Default::default()
+    /// })?;
+    /// ```
+    ///
+    /// With arbiter split (1% fee, 25% to arbiter):
+    /// ```ignore
+    /// client.set_per_asset_fee(&admin, &token, &PerAssetFeeConfig {
+    ///     fee_bps: 100,
+    ///     arbiter_bps: 2500,  // 25% of fee
+    ///     ..Default::default()
+    /// })?;
+    /// ```
+    ///
+    /// With explicit splits (0.5% fee: 40% arbiter, 30% platform, 30% collector):
+    /// ```ignore
+    /// client.set_per_asset_fee(&admin, &token, &PerAssetFeeConfig {
+    ///     fee_bps: 50,
+    ///     arbiter_bps: 0,  // Ignored when explicit ratios are set
+    ///     arbiter_fee: FeeRatio { numerator: 2, denominator: 5 },
+    ///     platform_fee: FeeRatio { numerator: 3, denominator: 10 },
+    ///     collector_fee: FeeRatio { numerator: 3, denominator: 10 },
+    ///     schema_version: PER_ASSET_FEE_SCHEMA_VERSION,
+    /// })?;
+    /// ```
     pub fn set_per_asset_fee(
         env: Env,
         caller: Address,
@@ -1007,7 +1092,19 @@ impl RustAcademyContract {
         admin::set_per_asset_fee(&env, &caller, token, config)
     }
 
-    /// Get per-asset fee configuration for a token.
+    /// Get per-asset fee configuration for a token (read-only).
+    ///
+    /// Returns `Some(config)` if a per-asset override has been set for this token,
+    /// or `None` if this token uses the global fee config or oracle pricing.
+    ///
+    /// # Examples
+    /// ```ignore
+    /// if let Some(per_asset_config) = client.get_per_asset_fee(&token) {
+    ///     println!("XLM fee: {}%", per_asset_config.fee_bps / 100);
+    /// } else {
+    ///     println!("XLM uses global fee or oracle pricing");
+    /// }
+    /// ```
     pub fn get_per_asset_fee(env: Env, token: Address) -> Option<PerAssetFeeConfig> {
         storage::get_per_asset_fee(&env, &token)
     }
@@ -1292,6 +1389,44 @@ impl RustAcademyContract {
     /// Returns `(start, end)` epoch timestamps. Both 0 means no window is set.
     pub fn get_upgrade_window(env: Env) -> (u64, u64) {
         storage::get_upgrade_window(&env)
+    }
+
+    /// Enable or disable the upgrade gate master switch (**Admin only**).
+    ///
+    /// When disabled, `start_upgrade` is blocked regardless of the configured
+    /// upgrade window.  Defaults to enabled when never explicitly set.
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment
+    /// * `caller` - Caller address (must be admin)
+    /// * `enabled` - `true` to enable upgrades, `false` to disable
+    ///
+    /// # Errors
+    /// * `InsufficientRole` - Caller is not admin
+    pub fn set_upgrade_gate(
+        env: Env,
+        caller: Address,
+        enabled: bool,
+    ) -> Result<(), RustAcademyError> {
+        admin::require_admin(&env, &caller)?;
+        storage::set_upgrade_gate_enabled(&env, enabled);
+        Ok(())
+    }
+
+    /// Validate whether the current contract state is safe for an upgrade.
+    ///
+    /// Returns an [`UpgradeSafetyReport`] that breaks down each precondition.
+    /// This is a read-only view; no authorization required.
+    pub fn check_upgrade_safety(env: Env) -> types::UpgradeSafetyReport {
+        storage::check_upgrade_safety(&env)
+    }
+
+    /// Return the current upgrade gate status.
+    ///
+    /// Combines window, in-progress, and gate-enabled flags into a single
+    /// [`UpgradeState`] snapshot.  This is a read-only view.
+    pub fn get_upgrade_status(env: Env) -> types::UpgradeState {
+        metadata::upgrade_state(&env)
     }
 
     /// Start an upgrade during the active upgrade window (**Admin only**).
