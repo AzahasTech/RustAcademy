@@ -29,7 +29,10 @@ describe('StreakService', () => {
       expect(() => service.getStreak(USER)).toThrow(NotFoundException);
     });
 
-    it('returns zero streak for new user', () => {
+    it('returns zero streak for a user after reset', () => {
+      // Register the user first (getStreak throws for truly unknown users)
+      service.checkIn(USER);
+      service.resetStreak(USER);
       const streak = service.getStreak(USER);
       expect(streak).toMatchObject({
         userId: USER,
@@ -71,35 +74,32 @@ describe('StreakService', () => {
     it('continues streak on consecutive days', () => {
       // Day 1
       service.checkIn(USER);
-      
-      // Simulate next day by mocking Date.now
-      const now = new Date();
-      const tomorrow = new Date(now.getTime() + 86400000); // +24 hours
-      jest.spyOn(global.Date, 'now').mockImplementation(() => now.getTime());
-      
+
+      // Manually set lastCheckin to yesterday so checkIn sees a consecutive day
+      const record = service.getRecord(USER)!;
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      record.lastCheckin = yesterday;
+
       const result = service.checkIn(USER);
       expect(result.newStreak).toBe(2);
-      expect(result.streakBonus).toBe(5);
-      
-      // Restore Date.now
-      jest.restoreAllMocks();
+      // streak bonus only kicks in at 3-day streak (STREAK_BONUS_THRESHOLDS)
+      expect(result.streakBonus).toBe(0);
     });
 
     it('resets streak after missing a day', () => {
       // Day 1
       service.checkIn(USER);
-      
-      // Simulate 2 days later (missed a day)
-      const now = new Date();
-      const twoDaysLater = new Date(now.getTime() + 2 * 86400000); // +48 hours
-      jest.spyOn(global.Date, 'now').mockImplementation(() => twoDaysLater.getTime());
-      
+
+      // Manually set lastCheckin to 2 days ago so streak breaks
+      const record = service.getRecord(USER)!;
+      const twoDaysAgo = new Date();
+      twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
+      record.lastCheckin = twoDaysAgo;
+
       const result = service.checkIn(USER);
       expect(result.newStreak).toBe(1); // Reset to 1
       expect(result.message).toContain('Streak reset');
-      
-      // Restore Date.now
-      jest.restoreAllMocks();
     });
   });
 

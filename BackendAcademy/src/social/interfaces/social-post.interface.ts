@@ -1,4 +1,5 @@
-export type ModerationStatus = 'pending' | 'approved' | 'rejected' | 'flagged';
+export const MODERATION_STATUSES = ['pending', 'approved', 'rejected', 'flagged'] as const;
+export type ModerationStatus = (typeof MODERATION_STATUSES)[number];
 
 export interface SocialPost {
   id: string;

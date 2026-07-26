@@ -10,6 +10,16 @@ const config: Config = {
   collectCoverageFrom: ['**/*.(t|j)s'],
   coverageDirectory: '../coverage',
   testEnvironment: 'node',
+
+  // ── Flaky-test / shared-state mitigations (#451) ──────────────
+  clearMocks: true,
+  resetMocks: true,
+  restoreMocks: true,
+
+  // Ensure every test file gets its own module registry so that
+  // module-level Maps / caches don't leak between suites.
+  resetModules: true,
+
 };
 
 export default config;
