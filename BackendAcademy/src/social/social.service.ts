@@ -5,6 +5,7 @@ import { UpdateModerationDto } from './dto/update-moderation.dto';
 import {
   FollowResponse,
   ModerationStatus,
+  MODERATION_STATUSES,
   SocialFeedResponse,
   SocialPost,
 } from './interfaces/social-post.interface';
@@ -298,8 +299,8 @@ export class SocialService {
   }
 
   private normalizeStatus(status: string): ModerationStatus {
-    const validStatuses: ModerationStatus[] = ['pending', 'approved', 'rejected', 'flagged'];
-    if (!validStatuses.includes(status as ModerationStatus)) {
+    const validStatuses: readonly string[] = MODERATION_STATUSES;
+    if (!validStatuses.includes(status)) {
       throw new BadRequestException({
         error: 'INVALID_STATUS',
         message: `Status must be one of: ${validStatuses.join(', ')}`,
@@ -316,5 +317,4 @@ export class SocialService {
     const normalized = tag.trim().toLowerCase();
     return normalized.startsWith('#') ? normalized.slice(1) : normalized;
   }
-}
 }

@@ -256,6 +256,15 @@ export class RewardsService {
     streakStore.delete(userId);
   }
 
+  /**
+   * Clears all in-memory stores (useful for testing isolation).
+   */
+  clearAll(): void {
+    xpStore.clear();
+    prizePoolStore.clear();
+    streakStore.clear();
+  }
+
   // -------------------------------------------------------------------------
   // Leaderboard
   // -------------------------------------------------------------------------
