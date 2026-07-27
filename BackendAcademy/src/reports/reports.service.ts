@@ -3,6 +3,8 @@ import { AnalyticsEvent } from '../analytics/analytics.entity';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { RewardsService } from '../rewards/rewards.service';
 import { DatabaseService } from '../database/database.service';
+import { SubmissionsService, ReviewQueueMetrics } from '../submissions/submissions.service';/rewards.service';
+import { DatabaseService } from '../database/database.service';
 
 export interface DailyActivitySummary {
   date: string;
@@ -74,6 +76,7 @@ export class ReportsService {
   constructor(
     private readonly analyticsService: AnalyticsService,
     private readonly rewardsService: RewardsService,
+    private readonly submissionsService: SubmissionsService,
     private readonly databaseService?: DatabaseService,
   ) {}
 
@@ -144,6 +147,33 @@ export class ReportsService {
       redemptionsByCoupon,
     };
   }
+
+  async getReviewQueueReport(): Promise<{
+    metrics: ReviewQueueMetrics;
+    flagsByReason: Record<string, number>;
+    averageResolutionTimeMs: number;
+  }> {
+    const metrics = this.submissionsService.getQueueMetrics();
+    const allFlags = this.submissionsService.getFlaggedSubmissions();
+
+    const flagsByReason: Record<string, number> = {};
+    for (const flag of allFlags) {
+      flagsByReason[flag.flagReason] = (flagsByReason[flag.flagReason] || 0) + 1;
+    }
+
+    const resolvedFlags = allFlags.filter(
+      (f) => f.resolvedAt && f.createdAt,
+    );
+    const totalResolutionTime = resolvedFlags.reduce((sum, f) => {
+      return sum + (f.resolvedAt!.getTime() - f.createdAt.getTime());
+    }, 0);
+    const averageResolutionTimeMs = resolvedFlags.length > 0
+      ? Math.round(totalResolutionTime / resolvedFlags.length)
+      : 0;
+
+    return { metrics, flagsByReason, averageResolutionTimeMs };
+  }
+
 
   private buildDailySummaries(
     events: AnalyticsEvent[],

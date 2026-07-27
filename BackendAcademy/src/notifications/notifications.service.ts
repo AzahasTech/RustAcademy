@@ -26,6 +26,18 @@ export class NotificationsService {
       titleKey: 'notification.courseCompleted',
       messageKey: 'notification.courseCompleted',
     },
+    submissionFlagged: {
+      titleKey: 'notification.submissionFlagged',
+      messageKey: 'notification.submissionFlagged',
+    },
+    reviewAssigned: {
+      titleKey: 'notification.reviewAssigned',
+      messageKey: 'notification.reviewAssigned',
+    },
+    reviewResolved: {
+      titleKey: 'notification.reviewResolved',
+      messageKey: 'notification.reviewResolved',
+    },
   };
 
   constructor(private readonly l10n: LocalizationService) {}
