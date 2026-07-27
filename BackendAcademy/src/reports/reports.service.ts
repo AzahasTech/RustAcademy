@@ -3,6 +3,7 @@ import { AnalyticsEvent } from '../analytics/analytics.entity';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { RewardsService } from '../rewards/rewards.service';
 import { DatabaseService } from '../database/database.service';
+import { WalletService } from '../wallet/wallet.service';
 
 export interface DailyActivitySummary {
   date: string;
@@ -75,6 +76,7 @@ export class ReportsService {
     private readonly analyticsService: AnalyticsService,
     private readonly rewardsService: RewardsService,
     private readonly databaseService?: DatabaseService,
+    private readonly walletService?: WalletService,
   ) {}
 
   async getModerationReport(): Promise<{ totalFlagged: number; actionTaken: number; pendingReview: number }> {
@@ -107,6 +109,11 @@ export class ReportsService {
       summaries,
       progress: this.buildProgress(userId, filteredEvents, fullSummaries),
     };
+  }
+
+  async getWalletReconciliationReport(): Promise<import('../wallet/wallet.service').ReconciliationReport | null> {
+    if (!this.walletService) return null;
+    return this.walletService.reconcileAllWallets();
   }
 
   async getCouponRedemptionReport(): Promise<CouponRedemptionReport> {

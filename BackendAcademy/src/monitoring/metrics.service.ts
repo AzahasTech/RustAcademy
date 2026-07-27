@@ -149,6 +149,14 @@ export class MetricsService implements OnModuleInit {
     }
   }
 
+  private reconciliationCount = 0;
+  private reconciliationDrifts = 0;
+
+  recordReconciliation(count: number, drifts: number): void {
+    this.reconciliationCount += count;
+    this.reconciliationDrifts += drifts;
+    this.setGauge('reconciliation_total', this.reconciliationCount);
+    this.setGauge('reconciliation_drifts', this.reconciliationDrifts);
   private cacheWarmCount = 0;
   private cacheWarmErrors = 0;
 
