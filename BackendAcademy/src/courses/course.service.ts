@@ -284,4 +284,21 @@ export class CourseService {
       course.category = dto.categories[0];
     }
   }
+
+  /**
+   * Same as findById, but throws instead of returning null. Use this in
+   * any code path (e.g. rendering a course + its lessons) where silently
+   * continuing with an undefined course would surface as a downstream
+   * server error rather than a clean 404.
+   */
+  async getOrFail(id: string): Promise<CourseEntity> {
+    const course = await this.findById(id);
+    if (!course) {
+      throw new NotFoundException({
+        error: 'COURSE_NOT_FOUND',
+        message: `Course with ID ${id} not found`,
+      });
+    }
+    return course;
+  }
 }
