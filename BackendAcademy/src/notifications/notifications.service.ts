@@ -29,6 +29,29 @@ export class NotificationsService {
       titleKey: 'notification.courseCompleted',
       messageKey: 'notification.courseCompleted',
     },
+    reportTriaged: {
+      titleKey: 'notification.reportTriaged',
+      messageKey: 'notification.reportTriaged',
+    },
+    reportEscalated: {
+      titleKey: 'notification.reportEscalated',
+      messageKey: 'notification.reportEscalated',
+    },
+    reportResolved: {
+      titleKey: 'notification.reportResolved',
+      messageKey: 'notification.reportResolved',
+    contentFlagged: {
+      titleKey: 'notification.contentFlagged',
+      messageKey: 'notification.contentFlagged',
+    },
+    contentApproved: {
+      titleKey: 'notification.contentApproved',
+      messageKey: 'notification.contentApproved',
+    },
+    contentRejected: {
+      titleKey: 'notification.contentRejected',
+      messageKey: 'notification.contentRejected',
+    },
   };
 
   constructor(
@@ -36,6 +59,10 @@ export class NotificationsService {
     private readonly configService?: ConfigService,
   ) {
     this.defaultTimeoutMs = this.configService?.get<number>('DEFAULT_REQUEST_TIMEOUT_MS') ?? 30_000;
+  }
+
+  createReportNotification(reportId: string, templateName: 'reportTriaged' | 'reportEscalated' | 'reportResolved'): Notification {
+    return this.createLocalized('system', templateName, 'in-app');
   }
 
   create(createNotificationDto: CreateNotificationDto): Notification {
@@ -104,5 +131,34 @@ export class NotificationsService {
     } finally {
       clearTimeout(timer);
     }
+   * Notifies a user that a signed asset URL is about to expire.
+   */
+  notifySignedUrlExpiring(
+    userId: string,
+    assetId: string,
+    expiresAt: Date,
+  ): Notification {
+    return this.create({
+      userId,
+      type: 'in-app',
+      title: 'Signed URL Expiring Soon',
+      message: `Your access link for asset ${assetId} will expire at ${expiresAt.toISOString()}. Request a new one if you still need access.`,
+    });
+  }
+
+  /**
+   * Notifies a user that an asset URL scope was insufficient.
+   */
+  notifyInsufficientScope(
+    userId: string,
+    assetId: string,
+    requiredScope: string,
+  ): Notification {
+    return this.create({
+      userId,
+      type: 'in-app',
+      title: 'Insufficient Access Scope',
+      message: `Your access level for asset ${assetId} does not include "${requiredScope}" permissions.`,
+    });
   }
 }

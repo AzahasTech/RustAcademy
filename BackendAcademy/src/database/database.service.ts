@@ -145,4 +145,31 @@ export class DatabaseService implements OnModuleInit {
     await this.updateCoupon(coupon.id, { currentRedemptions: coupon.currentRedemptions + 1 });
     return { success: true, finalAmount, discountApplied };
   }
+
+  /**
+   * Generic cursor-based pagination helper for in-memory collections.
+   * Returns a stable page using (createdAt, id) as the sort key.
+   */
+  cursorPaginate<T extends { id: string; createdAt: Date }>(
+    items: T[],
+    options: { cursor?: string; limit: number },
+  ): { page: T[]; nextCursor?: string } {
+    const sorted = [...items].sort((a, b) => {
+      const timeDiff = b.createdAt.getTime() - a.createdAt.getTime();
+      if (timeDiff !== 0) return timeDiff;
+      return b.id.localeCompare(a.id);
+    });
+
+    let startIndex = 0;
+    if (options.cursor) {
+      const idx = sorted.findIndex((item) => item.id === options.cursor);
+      if (idx !== -1) startIndex = idx + 1;
+    }
+
+    const page = sorted.slice(startIndex, startIndex + options.limit);
+    const nextCursor =
+      page.length === options.limit ? page[page.length - 1].id : undefined;
+
+    return { page, nextCursor };
+  }
 }
