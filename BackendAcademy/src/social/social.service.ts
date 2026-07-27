@@ -42,7 +42,7 @@ export class SocialService {
   }
 
   getFeed(dto: GetSocialFeedDto): SocialFeedResponse {
-    const { page = 1, limit = 10, status, search, userId, tag } = dto;
+    const { limit = 10, status, search, userId, tag, cursor } = dto;
     const normalizedStatus = status
       ? this.normalizeStatus(status)
       : 'approved';
@@ -72,18 +72,30 @@ export class SocialService {
       );
     }
 
-    const sortedPosts = filteredPosts.sort(
-      (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
-    );
+    const sortedPosts = filteredPosts.sort((a, b) => {
+      const timeDiff = b.createdAt.getTime() - a.createdAt.getTime();
+      if (timeDiff !== 0) return timeDiff;
+      return b.id.localeCompare(a.id);
+    });
 
-    const startIndex = (page - 1) * limit;
-    const endIndex = startIndex + limit;
-    const paginatedPosts = sortedPosts.slice(startIndex, endIndex);
+    let startIndex = 0;
+    if (cursor) {
+      const cursorIndex = sortedPosts.findIndex((p) => p.id === cursor);
+      if (cursorIndex !== -1) {
+        startIndex = cursorIndex + 1;
+      }
+    }
+
+    const paginatedPosts = sortedPosts.slice(startIndex, startIndex + limit);
+    const nextCursor =
+      paginatedPosts.length === limit
+        ? paginatedPosts[paginatedPosts.length - 1].id
+        : undefined;
 
     return {
       posts: paginatedPosts,
       total: filteredPosts.length,
-      page,
+      nextCursor,
       limit,
     };
   }
@@ -304,7 +316,7 @@ export class SocialService {
    */
   getPostsByHashtag(
     tag: string,
-    page = 1,
+    cursor?: string,
     limit = 10,
   ): SocialFeedResponse {
     const normalizedTag = this.normalizeTag(tag);
@@ -315,13 +327,27 @@ export class SocialService {
           post.moderationStatus === 'approved' &&
           post.content.toLowerCase().includes(`#${normalizedTag}`),
       )
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      .sort((a, b) => {
+        const timeDiff = b.createdAt.getTime() - a.createdAt.getTime();
+        if (timeDiff !== 0) return timeDiff;
+        return b.id.localeCompare(a.id);
+      });
 
-    const total = matchingPosts.length;
-    const startIndex = (page - 1) * limit;
+    let startIndex = 0;
+    if (cursor) {
+      const cursorIndex = matchingPosts.findIndex((p) => p.id === cursor);
+      if (cursorIndex !== -1) {
+        startIndex = cursorIndex + 1;
+      }
+    }
+
     const paginated = matchingPosts.slice(startIndex, startIndex + limit);
+    const nextCursor =
+      paginated.length === limit
+        ? paginated[paginated.length - 1].id
+        : undefined;
 
-    return { posts: paginated, total, page, limit };
+    return { posts: paginated, total: matchingPosts.length, nextCursor, limit };
   }
 
   // ---------------------------------------------------------------------------
