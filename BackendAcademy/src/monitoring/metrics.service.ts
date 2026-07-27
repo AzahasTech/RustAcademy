@@ -149,6 +149,19 @@ export class MetricsService implements OnModuleInit {
     }
   }
 
+  private cacheWarmCount = 0;
+  private cacheWarmErrors = 0;
+
+  recordCacheWarm(count: number): void {
+    this.cacheWarmCount += count;
+    this.setGauge('cache_warm_total', this.cacheWarmCount);
+  }
+
+  recordCacheWarmError(): void {
+    this.cacheWarmErrors++;
+    this.setGauge('cache_warm_errors', this.cacheWarmErrors);
+  }
+
   /**
    * Marks a cron job as having errored.
    */
