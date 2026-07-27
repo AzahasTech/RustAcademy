@@ -17,6 +17,11 @@ describe('StreakService', () => {
     service.clearAll();
   });
 
+  // Restore real timers after each test to prevent cross-test pollution
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   // -------------------------------------------------------------------------
   // getStreak() tests
   // -------------------------------------------------------------------------
