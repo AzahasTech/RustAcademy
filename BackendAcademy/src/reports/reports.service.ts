@@ -104,8 +104,14 @@ export class ReportsService {
   constructor(
     private readonly analyticsService: AnalyticsService,
     private readonly rewardsService: RewardsService,
+    private readonly submissionsService: SubmissionsService,
     private readonly databaseService?: DatabaseService,
+    private readonly walletService?: WalletService,
   ) {}
+
+  async getModerationReport(): Promise<{ totalFlagged: number; actionTaken: number; pendingReview: number }> {
+    return { totalFlagged: 0, actionTaken: 0, pendingReview: 0 };
+  }
 
   async getDailySummaryReport(
     userId: string,
@@ -133,6 +139,11 @@ export class ReportsService {
       summaries,
       progress: this.buildProgress(userId, filteredEvents, fullSummaries),
     };
+  }
+
+  async getWalletReconciliationReport(): Promise<import('../wallet/wallet.service').ReconciliationReport | null> {
+    if (!this.walletService) return null;
+    return this.walletService.reconcileAllWallets();
   }
 
   async getCouponRedemptionReport(): Promise<CouponRedemptionReport> {

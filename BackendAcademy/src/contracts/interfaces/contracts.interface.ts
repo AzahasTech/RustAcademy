@@ -38,6 +38,22 @@ export interface ContractInvocation {
   fee?: number;
 }
 
+export interface Vote {
+  userId: string;
+  vote: 'yes' | 'no';
+  votedAt: Date;
+}
+
+export interface Proposal {
+  id: string;
+  title: string;
+  description: string;
+  proposer: string;
+  votes: Vote[];
+  createdAt: Date;
+}
+
+
 export interface ContractInvocationResult {
   invocationId: string;
   contractId: string;

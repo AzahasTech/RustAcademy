@@ -7,14 +7,8 @@ import {
   } from '@nestjs/common';
   import { Request, Response } from 'express';
 import { MonitoringService } from '../monitoring/monitoring.service';
+import { ErrorCode, ERROR_CODE_MESSAGES } from '../common/error-codes.constants';
   
-  /**
-   * Global exception filter. Normalizes every thrown error into a consistent
-   * JSON shape: { error, message, statusCode, path, timestamp }. Also emits
-   * an error-event metric so operational regressions (like a spike in
-   * missing/unpublished lesson lookups) show up on dashboards without
-   * anyone having to grep logs.
-   */
   @Catch()
   export class HttpExceptionFilter implements ExceptionFilter {
     constructor(private readonly monitoring: MonitoringService) {}
@@ -31,14 +25,14 @@ import { MonitoringService } from '../monitoring/monitoring.service';
   
       const rawBody = isHttpException ? exception.getResponse() : null;
   
-      const { error, message } = this.normalize(rawBody, exception);
+      const { errorCode, message } = this.normalize(rawBody, exception);
       this.monitoring.recordError(
         request.route?.path ?? request.url,
-        error,
+        errorCode,
       );
   
       response.status(statusCode).json({
-        error,
+        error: errorCode,
         message,
         statusCode,
         path: request.url,
@@ -49,10 +43,7 @@ import { MonitoringService } from '../monitoring/monitoring.service';
     private normalize(
       rawBody: unknown,
       exception: unknown,
-    ): { error: string; message: string } {
-      // Exceptions thrown as `new NotFoundException({ error, message })`
-      // (the pattern used throughout CourseService/LessonService) already
-      // carry a structured body — pass it through as-is.
+    ): { errorCode: string; message: string } {
       if (
         rawBody &&
         typeof rawBody === 'object' &&
@@ -60,23 +51,21 @@ import { MonitoringService } from '../monitoring/monitoring.service';
         'message' in rawBody
       ) {
         return {
-          error: String((rawBody as any).error),
+          errorCode: String((rawBody as any).error),
           message: String((rawBody as any).message),
         };
       }
   
       if (typeof rawBody === 'string') {
-        return { error: 'HTTP_EXCEPTION', message: rawBody };
+        return { errorCode: ErrorCode.HTTP_EXCEPTION, message: rawBody };
       }
   
-      // Anything else (unexpected runtime errors) is masked with a generic
-      // message so internals never leak to the client.
       return {
-        error: 'INTERNAL_ERROR',
+        errorCode: ErrorCode.INTERNAL_ERROR,
         message:
           exception instanceof Error
-            ? 'An unexpected error occurred'
-            : 'An unknown error occurred',
+            ? ERROR_CODE_MESSAGES[ErrorCode.INTERNAL_ERROR]
+            : ERROR_CODE_MESSAGES[ErrorCode.INTERNAL_ERROR],
       };
     }
   }

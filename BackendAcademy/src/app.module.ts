@@ -1,5 +1,6 @@
-import { Module } from '@nestjs/common';
+import { Module, MiddlewareConsumer, NestModule } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
+import { ConfigService } from '@nestjs/config';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AppController } from './app.controller';
 import { ApiInfoController } from './api-info.controller';
@@ -21,7 +22,6 @@ import { OnboardingModule } from './onboarding/onboarding.module';
 import { LessonModule } from './lessons/lesson.module';
 import { TaskModule } from './tasks/task.module';
 import { CourseModule } from './courses';
-import { JobsModule } from './jobs/jobs.module';
 import { LoggingModule } from './logging/logging.module';
 import { ProgressModule } from './courses/progress/progress.module';
 import { AppConfigModule } from './config/config.module';
@@ -32,6 +32,7 @@ import { SearchModule } from './search/search.module';
 import { PaymentsModule } from './payments/payments.module';
 import { I18nModule } from './i18n/i18n.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { CorrelationIdMiddleware } from './common/correlation-id.middleware';
 
 /**
  * Root application module.
@@ -46,13 +47,18 @@ import { NotificationsModule } from './notifications/notifications.module';
  */
 @Module({
   imports: [
-    ThrottlerModule.forRoot([
-      {
-        limit: 10,
-        ttl: 60_000,
-      },
-    ]),
     AppConfigModule,
+    ThrottlerModule.forRootAsync({
+      inject: [ConfigService],
+      // Values come from the validated env schema so local and container
+      // deployments always agree on types and defaults.
+      useFactory: (config: ConfigService) => [
+        {
+          limit: config.get<number>('THROTTLE_LIMIT', 10),
+          ttl: config.get<number>('THROTTLE_TTL_MS', 60_000),
+        },
+      ],
+    }),
     AuthModule,
     ContractsModule,
     UserProfileModule,
@@ -71,7 +77,6 @@ import { NotificationsModule } from './notifications/notifications.module';
     TaskModule,
     CourseModule,
     AssetsModule,
-    JobsModule,
     LoggingModule,
     PathfindingModule,
     MonitoringModule,
@@ -90,4 +95,9 @@ import { NotificationsModule } from './notifications/notifications.module';
     },
   ],
 })
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(CorrelationIdMiddleware).forRoutes('*');
+  }
+}
 export class AppModule {}

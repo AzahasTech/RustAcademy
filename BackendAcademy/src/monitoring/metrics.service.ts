@@ -7,6 +7,7 @@ interface MetricEntry {
   value: number;
   timestamp: Date;
   labels: Record<string, string>;
+  correlationId?: string;
 }
 
 interface CronHealthStatus {
@@ -30,6 +31,7 @@ export class MetricsService implements OnModuleInit {
   private readonly metrics = new Map<string, MetricEntry>();
   private readonly cronHealth = new Map<string, CronHealthStatus>();
   private readonly requestCounts = new Map<string, number>();
+  private readonly errorCounts = new Map<string, number>();
 
   constructor(private readonly configService: ConfigService) {}
 
@@ -44,17 +46,20 @@ export class MetricsService implements OnModuleInit {
   // ──────────────────────────────────────────────────────────────────
 
   incrementCounter(name: string, value = 1, labels: Record<string, string> = {}): void {
+    const correlationId = CorrelationLoggerService.getCorrelationId();
     const existing = this.metrics.get(name);
     if (existing) {
       existing.value += value;
       existing.timestamp = new Date();
       existing.labels = { ...existing.labels, ...labels };
+      if (correlationId) existing.correlationId = correlationId;
     } else {
       this.metrics.set(name, {
         name,
         value,
         timestamp: new Date(),
         labels,
+        correlationId,
       });
     }
     this.logger.debug(`Metric "${name}" incremented to ${this.metrics.get(name)?.value}`);

@@ -122,4 +122,75 @@ export class RedisService {
     const regex = new RegExp(pattern.replace('*', '.*'));
     return Array.from(this.cache.keys()).filter((k) => regex.test(k));
   }
+
+  // ---------------------------------------------------------------------------
+  // Webhook Idempotency — Issue #411
+  // ---------------------------------------------------------------------------
+
+  private readonly webhookIdempotency = new Map<string, number>();
+
+  /**
+   * Returns true if this idempotency key was already seen within the TTL window.
+   */
+  async isWebhookIdempotent(idempotencyKey: string, ttlMs = 3_600_000): Promise<boolean> {
+    const now = Date.now();
+    const firstSeen = this.webhookIdempotency.get(idempotencyKey);
+    if (firstSeen && now - firstSeen < ttlMs) {
+      return true;
+    }
+    this.webhookIdempotency.set(idempotencyKey, now);
+    return false;
+  }
+
+  /**
+   * Records a webhook delivery attempt for tracking.
+   */
+  private readonly webhookDeliveryLog = new Map<string, Array<{
+    attempt: number;
+    timestamp: Date;
+    status: string;
+    statusCode?: number;
+  }>>();
+
+  async recordWebhookDelivery(
+    webhookId: string,
+    attempt: number,
+    status: string,
+    statusCode?: number,
+  ): Promise<void> {
+    const log = this.webhookDeliveryLog.get(webhookId) || [];
+    log.push({ attempt, timestamp: new Date(), status, statusCode });
+    this.webhookDeliveryLog.set(webhookId, log);
+  }
+
+  async getWebhookDeliveryLog(webhookId: string): Promise<Array<{
+    attempt: number;
+    timestamp: Date;
+    status: string;
+    statusCode?: number;
+  }>> {
+    return this.webhookDeliveryLog.get(webhookId) || [];
+  async warmCache(keys: string[], fetchFn: (key: string) => Promise<unknown>, ttlMs?: number): Promise<number> {
+    let warmed = 0;
+    for (const key of keys) {
+      const existing = this.cache.get(key);
+      if (existing && Date.now() < existing.expiresAt) continue;
+      try {
+        const value = await fetchFn(key);
+        await this.set(key, value, ttlMs);
+        warmed++;
+      } catch {
+        this.logger.warn(`Cache warming failed for key: ${key}`);
+      }
+    }
+    return warmed;
+  }
+
+  async getCacheStats(): Promise<{ totalKeys: number; expiredKeys: number }> {
+    let expiredKeys = 0;
+    for (const [key, entry] of this.cache) {
+      if (Date.now() > entry.expiresAt) expiredKeys++;
+    }
+    return { totalKeys: this.cache.size, expiredKeys };
+  }
 }
