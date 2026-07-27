@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { CorrelationLoggerService } from '../logging/logger.service';
+import { ErrorCode } from '../common/error-codes.constants';
 
 interface MetricEntry {
   name: string;
@@ -26,6 +27,7 @@ export class MetricsService implements OnModuleInit {
   private readonly metrics = new Map<string, MetricEntry>();
   private readonly cronHealth = new Map<string, CronHealthStatus>();
   private readonly requestCounts = new Map<string, number>();
+  private readonly errorCounts = new Map<string, number>();
 
   constructor(private readonly configService: ConfigService) {}
 
@@ -154,6 +156,27 @@ export class MetricsService implements OnModuleInit {
     }
   }
 
+  private reconciliationCount = 0;
+  private reconciliationDrifts = 0;
+
+  recordReconciliation(count: number, drifts: number): void {
+    this.reconciliationCount += count;
+    this.reconciliationDrifts += drifts;
+    this.setGauge('reconciliation_total', this.reconciliationCount);
+    this.setGauge('reconciliation_drifts', this.reconciliationDrifts);
+  private cacheWarmCount = 0;
+  private cacheWarmErrors = 0;
+
+  recordCacheWarm(count: number): void {
+    this.cacheWarmCount += count;
+    this.setGauge('cache_warm_total', this.cacheWarmCount);
+  }
+
+  recordCacheWarmError(): void {
+    this.cacheWarmErrors++;
+    this.setGauge('cache_warm_errors', this.cacheWarmErrors);
+  }
+
   /**
    * Marks a cron job as having errored.
    */
@@ -164,5 +187,88 @@ export class MetricsService implements OnModuleInit {
       entry.error = error;
     }
     this.incrementCounter('cron_errors_total', 1, { job: name });
+  }
+
+  /**
+   * Records an error by its structured error code.
+   */
+  recordErrorByCode(errorCode: ErrorCode, endpoint?: string): void {
+    const count = this.errorCounts.get(errorCode) || 0;
+    this.errorCounts.set(errorCode, count + 1);
+    this.incrementCounter('errors_total', 1, {
+      error_code: errorCode,
+      ...(endpoint ? { endpoint } : {}),
+    });
+    this.logger.debug(`Error "${errorCode}" recorded (total: ${count + 1})`);
+  }
+
+  /**
+   * Returns error counts grouped by error code.
+   */
+  getErrorCounts(): Array<{ errorCode: string; count: number }> {
+    return Array.from(this.errorCounts.entries()).map(([errorCode, count]) => ({
+      errorCode,
+      count,
+    }));
+  }
+
+  /**
+   * Returns error count for a specific error code.
+   */
+  getErrorCountByCode(errorCode: string): number {
+    return this.errorCounts.get(errorCode) || 0;
+  }
+
+  /**
+   * Clears all error counts.
+   */
+  clearErrorCounts(): void {
+    this.errorCounts.clear();
+  // ---------------------------------------------------------------------------
+  // Pagination Metrics — Issue #415
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Records a pagination request metric for monitoring feed ordering stability.
+   */
+  recordPaginationRequest(feed: string, cursorUsed: boolean, resultCount: number): void {
+    this.incrementCounter('pagination_requests_total', 1, {
+      feed,
+      cursor_used: String(cursorUsed),
+    });
+    this.setGauge(`pagination_result_count:${feed}`, resultCount, { feed });
+    if (resultCount === 0) {
+      this.incrementCounter('pagination_empty_results_total', 1, { feed });
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // API Key & Webhook Metrics — Issue #410, #412
+  // ---------------------------------------------------------------------------
+
+  recordApiKeyEvent(
+    event: 'created' | 'revoked' | 'rotated' | 'validated' | 'expired' | 'anomaly_detected',
+    labels: Record<string, string> = {},
+  ): void {
+    this.incrementCounter('api_key_events_total', 1, { event, ...labels });
+  }
+
+  recordWebhookDelivery(
+    status: 'success' | 'failed' | 'retry_scheduled',
+    attemptNumber: number,
+    labels: Record<string, string> = {},
+  ): void {
+    this.incrementCounter('webhook_deliveries_total', 1, {
+      status,
+      attempt: String(attemptNumber),
+      ...labels,
+    });
+    if (status === 'failed') {
+      this.incrementCounter('webhook_failures_total', 1, labels);
+    }
+  }
+
+  recordRequestTimeout(service: string, endpoint: string): void {
+    this.incrementCounter('request_timeouts_total', 1, { service, endpoint });
   }
 }

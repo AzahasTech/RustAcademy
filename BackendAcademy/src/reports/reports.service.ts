@@ -3,6 +3,9 @@ import { AnalyticsEvent } from '../analytics/analytics.entity';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { RewardsService } from '../rewards/rewards.service';
 import { DatabaseService } from '../database/database.service';
+import { SubmissionsService, ReviewQueueMetrics } from '../submissions/submissions.service';/rewards.service';
+import { DatabaseService } from '../database/database.service';
+import { WalletService } from '../wallet/wallet.service';
 
 export interface DailyActivitySummary {
   date: string;
@@ -62,6 +65,29 @@ export interface CouponRedemptionReport {
   }>;
 }
 
+export type ReportStatus = 'submitted' | 'triage' | 'escalated' | 'resolved' | 'dismissed';
+
+export interface AuditEntry {
+  timestamp: Date;
+  actor: string;
+  fromStatus: ReportStatus | null;
+  toStatus: ReportStatus;
+  note: string;
+}
+
+export interface ReportTriageEntry {
+  id: string;
+  reporterId: string;
+  targetType: 'user' | 'post' | 'comment';
+  targetId: string;
+  reason: string;
+  status: ReportStatus;
+  assignedTo: string | null;
+  auditTrail: AuditEntry[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 interface DailyBucket {
   totalEvents: number;
   firstActivityAt: string | null;
@@ -74,8 +100,14 @@ export class ReportsService {
   constructor(
     private readonly analyticsService: AnalyticsService,
     private readonly rewardsService: RewardsService,
+    private readonly submissionsService: SubmissionsService,
     private readonly databaseService?: DatabaseService,
+    private readonly walletService?: WalletService,
   ) {}
+
+  async getModerationReport(): Promise<{ totalFlagged: number; actionTaken: number; pendingReview: number }> {
+    return { totalFlagged: 0, actionTaken: 0, pendingReview: 0 };
+  }
 
   async getDailySummaryReport(
     userId: string,
@@ -103,6 +135,11 @@ export class ReportsService {
       summaries,
       progress: this.buildProgress(userId, filteredEvents, fullSummaries),
     };
+  }
+
+  async getWalletReconciliationReport(): Promise<import('../wallet/wallet.service').ReconciliationReport | null> {
+    if (!this.walletService) return null;
+    return this.walletService.reconcileAllWallets();
   }
 
   async getCouponRedemptionReport(): Promise<CouponRedemptionReport> {
@@ -143,6 +180,77 @@ export class ReportsService {
       expiredCoupons: coupons.filter((c) => c.expiresAt && c.expiresAt <= now).length,
       redemptionsByCoupon,
     };
+  }
+
+  async getReviewQueueReport(): Promise<{
+    metrics: ReviewQueueMetrics;
+    flagsByReason: Record<string, number>;
+    averageResolutionTimeMs: number;
+  }> {
+    const metrics = this.submissionsService.getQueueMetrics();
+    const allFlags = this.submissionsService.getFlaggedSubmissions();
+
+    const flagsByReason: Record<string, number> = {};
+    for (const flag of allFlags) {
+      flagsByReason[flag.flagReason] = (flagsByReason[flag.flagReason] || 0) + 1;
+    }
+
+    const resolvedFlags = allFlags.filter(
+      (f) => f.resolvedAt && f.createdAt,
+    );
+    const totalResolutionTime = resolvedFlags.reduce((sum, f) => {
+      return sum + (f.resolvedAt!.getTime() - f.createdAt.getTime());
+    }, 0);
+    const averageResolutionTimeMs = resolvedFlags.length > 0
+      ? Math.round(totalResolutionTime / resolvedFlags.length)
+      : 0;
+
+    return { metrics, flagsByReason, averageResolutionTimeMs };
+  }
+
+  private readonly reports = new Map<string, ReportTriageEntry>();
+
+  createReport(reporterId: string, targetType: ReportTriageEntry['targetType'], targetId: string, reason: string): ReportTriageEntry {
+    const id = crypto.randomUUID();
+    const now = new Date();
+    const entry: ReportTriageEntry = {
+      id, reporterId, targetType, targetId, reason,
+      status: 'submitted', assignedTo: null,
+      auditTrail: [{ timestamp: now, actor: reporterId, fromStatus: null, toStatus: 'submitted', note: 'Report submitted' }],
+      createdAt: now, updatedAt: now,
+    };
+    this.reports.set(id, entry);
+    return entry;
+  }
+
+  transitionReportStatus(id: string, actor: string, toStatus: ReportStatus, note: string): ReportTriageEntry {
+    const report = this.reports.get(id);
+    if (!report) throw new NotFoundException({ error: 'REPORT_NOT_FOUND', message: `Report ${id} not found` });
+    const fromStatus = report.status;
+    report.status = toStatus;
+    report.updatedAt = new Date();
+    report.auditTrail.push({ timestamp: new Date(), actor, fromStatus, toStatus, note });
+    this.reports.set(id, report);
+    return report;
+  }
+
+  getReport(id: string): ReportTriageEntry {
+    const report = this.reports.get(id);
+    if (!report) throw new NotFoundException({ error: 'REPORT_NOT_FOUND', message: `Report ${id} not found` });
+    return report;
+  }
+
+  getAllReports(status?: ReportStatus): ReportTriageEntry[] {
+    const all = Array.from(this.reports.values());
+    return status ? all.filter((r) => r.status === status) : all;
+  }
+
+  getReportsByAssignee(assignee: string): ReportTriageEntry[] {
+    return Array.from(this.reports.values()).filter((r) => r.assignedTo === assignee);
+  }
+
+  getAuditTrail(id: string): AuditEntry[] {
+    return this.getReport(id).auditTrail;
   }
 
   private buildDailySummaries(

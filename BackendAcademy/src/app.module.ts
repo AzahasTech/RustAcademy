@@ -1,5 +1,6 @@
 import { Module, MiddlewareConsumer, NestModule } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
+import { ConfigService } from '@nestjs/config';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AppController } from './app.controller';
 import { ApiInfoController } from './api-info.controller';
@@ -30,18 +31,24 @@ import { MonitoringModule } from './monitoring/monitoring.module';
 import { SearchModule } from './search/search.module';
 import { PaymentsModule } from './payments/payments.module';
 import { I18nModule } from './i18n/i18n.module';
+import { DatabaseModule } from './database/database.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { CorrelationIdMiddleware } from './common/correlation-id.middleware';
 
 @Module({
   imports: [
-    ThrottlerModule.forRoot([
-      {
-        limit: 10,
-        ttl: 60_000,
-      },
-    ]),
     AppConfigModule,
+    ThrottlerModule.forRootAsync({
+      inject: [ConfigService],
+      // Values come from the validated env schema so local and container
+      // deployments always agree on types and defaults.
+      useFactory: (config: ConfigService) => [
+        {
+          limit: config.get<number>('THROTTLE_LIMIT', 10),
+          ttl: config.get<number>('THROTTLE_TTL_MS', 60_000),
+        },
+      ],
+    }),
     AuthModule,
     ContractsModule,
     UserProfileModule,
@@ -83,3 +90,4 @@ export class AppModule implements NestModule {
     consumer.apply(CorrelationIdMiddleware).forRoutes('*');
   }
 }
+export class AppModule {}

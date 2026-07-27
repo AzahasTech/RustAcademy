@@ -36,6 +36,9 @@ export interface LocalizationStrings {
   'notification.milestone': string;
   'notification.submissionGraded': string;
   'notification.courseCompleted': string;
+  'notification.contentFlagged': string;
+  'notification.contentApproved': string;
+  'notification.contentRejected': string;
 
   // ── General ─────────────────────────────────────────────
   'general.loading': string;
@@ -78,6 +81,9 @@ const STRINGS: Record<string, LocalizationStrings> = {
     'notification.milestone': 'Congratulations on reaching a new milestone!',
     'notification.submissionGraded': 'Your submission has been graded.',
     'notification.courseCompleted': 'You have completed the course!',
+    'notification.contentFlagged': 'Your content has been flagged for moderation review.',
+    'notification.contentApproved': 'Your content has been approved by moderation.',
+    'notification.contentRejected': 'Your content has been rejected by moderation.',
 
     'general.loading': 'Loading...',
     'general.error': 'An error occurred',
