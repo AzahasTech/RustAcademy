@@ -137,6 +137,40 @@ export class AnalyticsService {
     return this.events;
   }
 
+  /**
+   * Returns events using cursor-based pagination with stable ordering.
+   */
+  async getEventsPaginated(options: {
+    cursor?: string;
+    limit: number;
+    userId?: string;
+  }): Promise<{ events: AnalyticsEvent[]; nextCursor?: string }> {
+    let filtered = [...this.events];
+    if (options.userId) {
+      filtered = filtered.filter((e) => e.userId === options.userId);
+    }
+
+    const sorted = filtered.sort((a, b) => {
+      const timeDiff = b.timestamp.getTime() - a.timestamp.getTime();
+      if (timeDiff !== 0) return timeDiff;
+      return (b.id ?? '').localeCompare(a.id ?? '');
+    });
+
+    let startIndex = 0;
+    if (options.cursor) {
+      const cursorIdx = sorted.findIndex((e) => e.id === options.cursor);
+      if (cursorIdx !== -1) startIndex = cursorIdx + 1;
+    }
+
+    const events = sorted.slice(startIndex, startIndex + options.limit);
+    const nextCursor =
+      events.length === options.limit
+        ? events[events.length - 1].id
+        : undefined;
+
+    return { events, nextCursor };
+  }
+
   async deleteEvent(id: string): Promise<boolean> {
     const index = this.events.findIndex(event => event.id === id);
     if (index === -1) return false;
