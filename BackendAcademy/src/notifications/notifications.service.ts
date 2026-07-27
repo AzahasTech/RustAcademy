@@ -95,4 +95,36 @@ export class NotificationsService {
       message: this.l10n.t(template.messageKey),
     });
   }
+
+  /**
+   * Notifies a user that a signed asset URL is about to expire.
+   */
+  notifySignedUrlExpiring(
+    userId: string,
+    assetId: string,
+    expiresAt: Date,
+  ): Notification {
+    return this.create({
+      userId,
+      type: 'in-app',
+      title: 'Signed URL Expiring Soon',
+      message: `Your access link for asset ${assetId} will expire at ${expiresAt.toISOString()}. Request a new one if you still need access.`,
+    });
+  }
+
+  /**
+   * Notifies a user that an asset URL scope was insufficient.
+   */
+  notifyInsufficientScope(
+    userId: string,
+    assetId: string,
+    requiredScope: string,
+  ): Notification {
+    return this.create({
+      userId,
+      type: 'in-app',
+      title: 'Insufficient Access Scope',
+      message: `Your access level for asset ${assetId} does not include "${requiredScope}" permissions.`,
+    });
+  }
 }

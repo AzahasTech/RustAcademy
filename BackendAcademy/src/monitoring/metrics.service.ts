@@ -181,4 +181,18 @@ export class MetricsService implements OnModuleInit {
     }
     this.incrementCounter('cron_errors_total', 1, { job: name });
   }
+
+  /**
+   * Records a pagination request metric for monitoring feed ordering stability.
+   */
+  recordPaginationRequest(feed: string, cursorUsed: boolean, resultCount: number): void {
+    this.incrementCounter('pagination_requests_total', 1, {
+      feed,
+      cursor_used: String(cursorUsed),
+    });
+    this.setGauge(`pagination_result_count:${feed}`, resultCount, { feed });
+    if (resultCount === 0) {
+      this.incrementCounter('pagination_empty_results_total', 1, { feed });
+    }
+  }
 }
