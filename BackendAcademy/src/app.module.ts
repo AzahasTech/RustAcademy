@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AppController } from './app.controller';
+import { ApiInfoController } from './api-info.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
 import { ChallengesModule } from './challenges/challenges.module';
@@ -29,8 +30,10 @@ import { PathfindingModule } from './pathfinding/pathfinding.module';
 import { MonitoringModule } from './monitoring/monitoring.module';
 import { SearchModule } from './search/search.module';
 import { PaymentsModule } from './payments/payments.module';
-import { SessionsModule } from './sessions/sessions.module';
-import { ReportsModule } from './reports/reports.module';
+import { I18nModule } from './i18n/i18n.module';
+import { JobsModule } from './jobs/jobs.module';
+import { MonitoringModule } from './monitoring/monitoring.module';
+import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
   imports: [
@@ -67,10 +70,12 @@ import { ReportsModule } from './reports/reports.module';
     ProgressModule,
     SearchModule,
     PaymentsModule,
-    SessionsModule,
-    ReportsModule,
+    I18nModule,
+    JobsModule,
+    MonitoringModule,
+    NotificationsModule,
   ],
-  controllers: [AppController],
+  controllers: [AppController, ApiInfoController],
   providers: [
     AppService,
     {
