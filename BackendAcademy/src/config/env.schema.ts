@@ -1,5 +1,6 @@
 import * as Joi from 'joi';
 
+export const envSchema = Joi.object({
 export const envValidationSchema = Joi.object({
   NODE_ENV: Joi.string().valid('development', 'production', 'test').default('development'),
   PORT: Joi.number().default(3000),
@@ -18,6 +19,20 @@ export const envValidationSchema = Joi.object({
   CRON_CLEANUP_SCHEDULE: Joi.string().default('0 0 * * *'),
   CRON_ANALYTICS_SCHEDULE: Joi.string().default('0 */6 * * *'),
   CRON_NOTIFICATIONS_SCHEDULE: Joi.string().default('*/30 * * * *'),
+  ANALYTICS_BATCH_SIZE: Joi.number().default(100),
+  ANALYTICS_MAX_PAYLOAD_SIZE: Joi.number().default(1048576),
+  ANALYTICS_RATE_LIMIT_WINDOW_MS: Joi.number().default(60000),
+  ANALYTICS_RATE_LIMIT_MAX: Joi.number().default(100),
+  ANALYTICS_RETENTION_DAYS: Joi.number().default(30),
+});
+
+export interface AnalyticsEnvConfig {
+  ANALYTICS_BATCH_SIZE: number;
+  ANALYTICS_MAX_PAYLOAD_SIZE: number;
+  ANALYTICS_RATE_LIMIT_WINDOW_MS: number;
+  ANALYTICS_RATE_LIMIT_MAX: number;
+  ANALYTICS_RETENTION_DAYS: number;
+}
 
   ASSETS_UPLOAD_DIR: Joi.string().optional(),
   ASSETS_BASE_URL: Joi.string().optional(),
