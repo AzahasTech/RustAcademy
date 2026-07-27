@@ -182,6 +182,10 @@ export class MetricsService implements OnModuleInit {
     this.incrementCounter('cron_errors_total', 1, { job: name });
   }
 
+  // ---------------------------------------------------------------------------
+  // Pagination Metrics — Issue #415
+  // ---------------------------------------------------------------------------
+
   /**
    * Records a pagination request metric for monitoring feed ordering stability.
    */
@@ -194,5 +198,35 @@ export class MetricsService implements OnModuleInit {
     if (resultCount === 0) {
       this.incrementCounter('pagination_empty_results_total', 1, { feed });
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // API Key & Webhook Metrics — Issue #410, #412
+  // ---------------------------------------------------------------------------
+
+  recordApiKeyEvent(
+    event: 'created' | 'revoked' | 'rotated' | 'validated' | 'expired' | 'anomaly_detected',
+    labels: Record<string, string> = {},
+  ): void {
+    this.incrementCounter('api_key_events_total', 1, { event, ...labels });
+  }
+
+  recordWebhookDelivery(
+    status: 'success' | 'failed' | 'retry_scheduled',
+    attemptNumber: number,
+    labels: Record<string, string> = {},
+  ): void {
+    this.incrementCounter('webhook_deliveries_total', 1, {
+      status,
+      attempt: String(attemptNumber),
+      ...labels,
+    });
+    if (status === 'failed') {
+      this.incrementCounter('webhook_failures_total', 1, labels);
+    }
+  }
+
+  recordRequestTimeout(service: string, endpoint: string): void {
+    this.incrementCounter('request_timeouts_total', 1, { service, endpoint });
   }
 }

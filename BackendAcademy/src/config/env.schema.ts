@@ -30,6 +30,8 @@ export const envValidationSchema = Joi.object({
   WEBHOOK_MAX_RETRIES: Joi.number().default(5).description('Maximum webhook delivery retry attempts'),
   WEBHOOK_BASE_BACKOFF_MS: Joi.number().default(1000).description('Base backoff for webhook retries in ms'),
   WEBHOOK_MAX_BACKOFF_MS: Joi.number().default(60000).description('Maximum backoff for webhook retries in ms'),
+  WEBHOOK_SIGNATURE_SECRET: Joi.string().optional().description('HMAC secret for verifying webhook signatures'),
+  WEBHOOK_IDEMPOTENCY_TTL_SECONDS: Joi.number().default(3600).description('TTL for webhook idempotency keys'),
   WEBHOOK_SIGNATURE_SECRET: Joi.string().optional().description('Secret for webhook HMAC signatures'),
   WEBHOOK_IDEMPOTENCY_TTL_SECONDS: Joi.number().default(3600).description('TTL for webhook idempotency keys in Redis'),
 // ---------------------------------------------------------------------------

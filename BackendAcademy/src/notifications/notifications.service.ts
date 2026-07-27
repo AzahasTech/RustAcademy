@@ -1,12 +1,15 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Notification } from './interfaces/notifications.interface';
 import { CreateNotificationDto } from './dto/create-notification.dto';
 import { LocalizationService } from '../i18n/localization.service';
 
 @Injectable()
 export class NotificationsService {
+  private readonly logger = new Logger(NotificationsService.name);
   private notifications: Notification[] = [];
   private preferences: Map<string, NotificationPreferences> = new Map();
+  private readonly defaultTimeoutMs: number;
 
   // ── Default localized notification templates ────────────────
   static readonly TEMPLATES: Record<string, { titleKey: keyof import('../i18n/localization.service').LocalizationStrings; messageKey: keyof import('../i18n/localization.service').LocalizationStrings }> = {
@@ -51,7 +54,12 @@ export class NotificationsService {
     },
   };
 
-  constructor(private readonly l10n: LocalizationService) {}
+  constructor(
+    private readonly l10n: LocalizationService,
+    private readonly configService?: ConfigService,
+  ) {
+    this.defaultTimeoutMs = this.configService?.get<number>('DEFAULT_REQUEST_TIMEOUT_MS') ?? 30_000;
+  }
 
   createReportNotification(reportId: string, templateName: 'reportTriaged' | 'reportEscalated' | 'reportResolved'): Notification {
     return this.createLocalized('system', templateName, 'in-app');
@@ -97,6 +105,32 @@ export class NotificationsService {
   }
 
   /**
+   * Sends an outbound push notification with a global request timeout — Issue #408.
+   */
+  async sendWithTimeout(
+    url: string,
+    payload: unknown,
+    timeoutMs?: number,
+  ): Promise<{ success: boolean; error?: string }> {
+    const timeout = timeoutMs ?? this.defaultTimeoutMs;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        return { success: false, error: `HTTP ${response.status}` };
+      }
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      clearTimeout(timer);
+    }
    * Notifies a user that a signed asset URL is about to expire.
    */
   notifySignedUrlExpiring(
