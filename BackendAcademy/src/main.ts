@@ -1,10 +1,11 @@
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
-import { ValidationPipe, Logger, VersioningType } from '@nestjs/common';
+import { Logger, VersioningType } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import helmet from 'helmet';
+import { createValidationPipe } from './common/validation.pipe';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -30,13 +31,10 @@ async function bootstrap() {
     defaultVersion: '1',
   });
 
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      transform: true,
-      forbidNonWhitelisted: true,
-    }),
-  );
+  // Shared options (src/common/validation.pipe.ts) guarantee nested DTOs
+  // and arrays are validated — and malformed payloads rejected — the same
+  // way in every controller.
+  app.useGlobalPipes(createValidationPipe());
 
   const swaggerConfig = new DocumentBuilder()
     .setTitle('RustAcademy API')
