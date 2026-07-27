@@ -38,6 +38,6 @@ export interface FollowResponse {
 export interface SocialFeedResponse {
   posts: SocialPost[];
   total: number;
-  page: number;
   limit: number;
+  nextCursor?: string;
 }

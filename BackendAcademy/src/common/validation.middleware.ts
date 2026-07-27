@@ -27,6 +27,7 @@ export class ValidationPipe implements PipeTransform<any> {
         error: ErrorCode.VALIDATION_ERROR,
         message: 'Request body must be a JSON object',
       });
+      throw new BadRequestException('Request body must be a JSON object');
     }
 
     if (this.schema.required) {
@@ -36,6 +37,7 @@ export class ValidationPipe implements PipeTransform<any> {
             error: ErrorCode.MISSING_PARAMETER,
             message: `Missing required field: ${field}`,
           });
+          throw new BadRequestException(`Missing required field: ${field}`);
         }
       }
     }
@@ -73,6 +75,21 @@ export class ValidationPipe implements PipeTransform<any> {
               error: ErrorCode.INVALID_PARAMETER,
               message: `Field "${field}" must be one of: ${rules.enum.join(', ')}`,
             });
+            throw new BadRequestException(`Field "${field}" must be a string`);
+          }
+          if (rules.type === 'number' && typeof fieldValue !== 'number') {
+            throw new BadRequestException(`Field "${field}" must be a number`);
+          }
+          if (rules.type === 'object' && (typeof fieldValue !== 'object' || Array.isArray(fieldValue))) {
+            throw new BadRequestException(`Field "${field}" must be an object`);
+          }
+          if (rules.type === 'array' && !Array.isArray(fieldValue)) {
+            throw new BadRequestException(`Field "${field}" must be an array`);
+          }
+          if (rules.enum && !rules.enum.includes(fieldValue)) {
+            throw new BadRequestException(
+              `Field "${field}" must be one of: ${rules.enum.join(', ')}`,
+            );
           }
         }
       }
