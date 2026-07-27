@@ -1,11 +1,13 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { CorrelationLoggerService } from '../logging/logger.service';
 
 interface MetricEntry {
   name: string;
   value: number;
   timestamp: Date;
   labels: Record<string, string>;
+  correlationId?: string;
 }
 
 interface CronHealthStatus {
@@ -36,17 +38,20 @@ export class MetricsService implements OnModuleInit {
    * Increments a counter metric by the given value (default 1).
    */
   incrementCounter(name: string, value = 1, labels: Record<string, string> = {}): void {
+    const correlationId = CorrelationLoggerService.getCorrelationId();
     const existing = this.metrics.get(name);
     if (existing) {
       existing.value += value;
       existing.timestamp = new Date();
       existing.labels = { ...existing.labels, ...labels };
+      if (correlationId) existing.correlationId = correlationId;
     } else {
       this.metrics.set(name, {
         name,
         value,
         timestamp: new Date(),
         labels,
+        correlationId,
       });
     }
     this.logger.debug(`Metric "${name}" incremented to ${this.metrics.get(name)?.value}`);

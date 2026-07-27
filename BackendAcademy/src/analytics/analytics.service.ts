@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { AnalyticsEvent } from './analytics.entity';
 import { RedisService } from '../redis/redis.service';
 import { v4 as uuidv4 } from 'uuid';
+import { CorrelationLoggerService } from '../logging/logger.service';
 
 export enum EventType {
   USER_REGISTERED = 'user_registered',
@@ -31,15 +32,27 @@ export enum EventType {
 export class AnalyticsService {
   private readonly events: AnalyticsEvent[] = [];
 
-  constructor(private readonly redisService?: RedisService) {}
+  constructor(
+    private readonly redisService?: RedisService,
+    private readonly logger?: CorrelationLoggerService,
+  ) {}
 
   async trackEvent(event: Partial<AnalyticsEvent>): Promise<AnalyticsEvent> {
+    const correlationId = event.properties?.correlationId
+      || CorrelationLoggerService.getCorrelationId();
+
     const analyticsEvent = new AnalyticsEvent({
       ...event,
       id: event.id || uuidv4(),
       timestamp: event.timestamp || new Date(),
+      properties: {
+        ...event.properties,
+        correlationId,
+      },
     });
     this.events.push(analyticsEvent);
+
+    this.logger?.log(`Event tracked: ${analyticsEvent.eventType}`, 'AnalyticsService');
 
     if (this.redisService && analyticsEvent.userId) {
       const eventTypes = [analyticsEvent.eventType];
@@ -47,6 +60,7 @@ export class AnalyticsService {
         lastInteractionAt: new Date(),
         interactionCount: 1,
         eventTypes,
+        correlationId,
       };
 
       if (analyticsEvent.eventType === EventType.COURSE_ENROLLED) {
