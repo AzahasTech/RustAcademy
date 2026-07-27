@@ -31,10 +31,19 @@ import { MonitoringModule } from './monitoring/monitoring.module';
 import { SearchModule } from './search/search.module';
 import { PaymentsModule } from './payments/payments.module';
 import { I18nModule } from './i18n/i18n.module';
-import { JobsModule } from './jobs/jobs.module';
-import { MonitoringModule } from './monitoring/monitoring.module';
 import { NotificationsModule } from './notifications/notifications.module';
 
+/**
+ * Root application module.
+ *
+ * #395: Contract ingestion is gated behind the CONTRACT_INGESTION_ENABLED
+ * feature flag. The ContractsModule itself handles the gate internally —
+ * when ingestion is disabled, contract invocation & deployment will return
+ * a clear error rather than silently failing. This ensures no accidental
+ * contract processing occurs when env vars are misconfigured.
+ *
+ * Duplicate module imports from the original have been consolidated.
+ */
 @Module({
   imports: [
     ThrottlerModule.forRoot([
@@ -53,7 +62,6 @@ import { NotificationsModule } from './notifications/notifications.module';
     SecurityModule,
     ChallengesModule,
     AiModule,
-    ContractsModule,
     LeaderboardModule,
     AnalyticsModule,
     WalletModule,
@@ -71,8 +79,6 @@ import { NotificationsModule } from './notifications/notifications.module';
     SearchModule,
     PaymentsModule,
     I18nModule,
-    JobsModule,
-    MonitoringModule,
     NotificationsModule,
   ],
   controllers: [AppController, ApiInfoController],

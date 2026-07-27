@@ -3,6 +3,7 @@ import { AnalyticsEvent } from '../analytics/analytics.entity';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { RewardsService } from '../rewards/rewards.service';
 import { DatabaseService } from '../database/database.service';
+import { ReplayResult, StateReconciliationResult } from '../contracts/interfaces/contracts.interface';
 
 export interface DailyActivitySummary {
   date: string;
@@ -60,6 +61,35 @@ export interface CouponRedemptionReport {
     redemptions: number;
     totalDiscount: number;
   }>;
+}
+
+/**
+ * #394: Report summarizing event replay activity.
+ */
+export interface ReplayActivityReport {
+  totalReplays: number;
+  totalEventsProcessed: number;
+  successfulReplays: number;
+  failedReplays: number;
+  partialReplays: number;
+  replaysByContract: Record<string, number>;
+  recentReplays: ReplayResult[];
+}
+
+/**
+ * #394: Report summarizing state reconciliation activity.
+ */
+export interface ReconciliationReport {
+  totalReconciliations: number;
+  consistentStateCount: number;
+  inconsistentStateCount: number;
+  totalDiscrepancies: number;
+  discrepanciesBySeverity: {
+    critical: number;
+    warning: number;
+    info: number;
+  };
+  recentReconciliations: StateReconciliationResult[];
 }
 
 interface DailyBucket {
@@ -144,6 +174,106 @@ export class ReportsService {
       redemptionsByCoupon,
     };
   }
+
+  // ──────────────────────────────────────────────────────────────────
+  // #394: Event replay and reconciliation reports
+  // ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Generates a report on event replay activity.
+   */
+  getReplayActivityReport(replayHistory: ReplayResult[]): ReplayActivityReport {
+    const replaysByContract: Record<string, number> = {};
+    let totalProcessed = 0;
+    let successful = 0;
+    let failed = 0;
+    let partial = 0;
+
+    for (const replay of replayHistory) {
+      replaysByContract[replay.contractId] =
+        (replaysByContract[replay.contractId] ?? 0) + 1;
+      totalProcessed += replay.eventsProcessed;
+
+      switch (replay.status) {
+        case 'completed':
+          successful++;
+          break;
+        case 'failed':
+          failed++;
+          break;
+        case 'partial':
+          partial++;
+          break;
+      }
+    }
+
+    // Most recent replays, sorted by completion time
+    const recentReplays = [...replayHistory]
+      .sort((a, b) => b.completedAt.getTime() - a.completedAt.getTime())
+      .slice(0, 20);
+
+    return {
+      totalReplays: replayHistory.length,
+      totalEventsProcessed: totalProcessed,
+      successfulReplays: successful,
+      failedReplays: failed,
+      partialReplays: partial,
+      replaysByContract,
+      recentReplays,
+    };
+  }
+
+  /**
+   * Generates a report on state reconciliation activity.
+   */
+  getReconciliationReport(
+    reconciliationHistory: StateReconciliationResult[],
+  ): ReconciliationReport {
+    let consistent = 0;
+    let inconsistent = 0;
+    let totalDiscrepancies = 0;
+    const bySeverity = { critical: 0, warning: 0, info: 0 };
+
+    for (const result of reconciliationHistory) {
+      if (result.isConsistent) {
+        consistent++;
+      } else {
+        inconsistent++;
+      }
+
+      for (const d of result.discrepancies) {
+        totalDiscrepancies++;
+        switch (d.severity) {
+          case 'critical':
+            bySeverity.critical++;
+            break;
+          case 'warning':
+            bySeverity.warning++;
+            break;
+          case 'info':
+            bySeverity.info++;
+            break;
+        }
+      }
+    }
+
+    const recentReconciliations = [...reconciliationHistory]
+      .sort((a, b) => b.reconciledAt.getTime() - a.reconciledAt.getTime())
+      .slice(0, 20);
+
+    return {
+      totalReconciliations: reconciliationHistory.length,
+      consistentStateCount: consistent,
+      inconsistentStateCount: inconsistent,
+      totalDiscrepancies,
+      discrepanciesBySeverity: bySeverity,
+      recentReconciliations,
+    };
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // Private helpers
+  // ──────────────────────────────────────────────────────────────────
 
   private buildDailySummaries(
     events: AnalyticsEvent[],

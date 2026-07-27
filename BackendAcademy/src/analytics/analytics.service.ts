@@ -1,7 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { AnalyticsEvent } from './analytics.entity';
 import { RedisService } from '../redis/redis.service';
 import { v4 as uuidv4 } from 'uuid';
+import { StateReconciliationResult } from '../contracts/interfaces/contracts.interface';
 
 export enum EventType {
   USER_REGISTERED = 'user_registered',
@@ -25,11 +26,31 @@ export enum EventType {
   SESSION_REVOKED = 'session_revoked',
   DEVICE_BOUND = 'device_bound',
   PRIVILEGE_CHANGED = 'privilege_changed',
+  // #394: Reconciliation events
+  CONTRACT_RECONCILIATION_STARTED = 'contract_reconciliation_started',
+  CONTRACT_RECONCILIATION_COMPLETED = 'contract_reconciliation_completed',
+  CONTRACT_REPLAY_STARTED = 'contract_replay_started',
+  CONTRACT_REPLAY_COMPLETED = 'contract_replay_completed',
+}
+
+/**
+ * Summary of reconciliation activity for analytics.
+ */
+export interface ReconciliationSummary {
+  totalReconciliations: number;
+  consistentStateCount: number;
+  inconsistentStateCount: number;
+  lastReconciliationAt: Date | null;
+  totalDiscrepanciesFound: number;
 }
 
 @Injectable()
 export class AnalyticsService {
+  private readonly logger = new Logger(AnalyticsService.name);
   private readonly events: AnalyticsEvent[] = [];
+
+  /** #394: History of reconciliation results for analytics */
+  private readonly reconciliationHistory: StateReconciliationResult[] = [];
 
   constructor(private readonly redisService?: RedisService) {}
 
@@ -59,6 +80,12 @@ export class AnalyticsService {
           ? [analyticsEvent.properties.challengeId]
           : [];
       }
+      // #394: Track reconciliation interactions
+      if (
+        analyticsEvent.eventType === EventType.CONTRACT_RECONCILIATION_COMPLETED
+      ) {
+        interactionData.lastReconciliationAt = new Date();
+      }
 
       await this.redisService.refreshUserSnapshot(analyticsEvent.userId, interactionData);
     }
@@ -67,16 +94,16 @@ export class AnalyticsService {
   }
 
   async getEventsByUserId(userId: string): Promise<AnalyticsEvent[]> {
-    return this.events.filter(event => event.userId === userId);
+    return this.events.filter((event) => event.userId === userId);
   }
 
   async getEventsByType(eventType: string): Promise<AnalyticsEvent[]> {
-    return this.events.filter(event => event.eventType === eventType);
+    return this.events.filter((event) => event.eventType === eventType);
   }
 
   async getEventsByDateRange(startDate: Date, endDate: Date): Promise<AnalyticsEvent[]> {
     return this.events.filter(
-      event => event.timestamp >= startDate && event.timestamp <= endDate,
+      (event) => event.timestamp >= startDate && event.timestamp <= endDate,
     );
   }
 
@@ -110,7 +137,7 @@ export class AnalyticsService {
   }
 
   async deleteEvent(id: string): Promise<boolean> {
-    const index = this.events.findIndex(event => event.id === id);
+    const index = this.events.findIndex((event) => event.id === id);
     if (index === -1) return false;
     this.events.splice(index, 1);
     return true;
@@ -121,10 +148,73 @@ export class AnalyticsService {
     cutoffDate.setDate(cutoffDate.getDate() - daysToKeep);
 
     const initialLength = this.events.length;
-    const filtered = this.events.filter(event => event.timestamp >= cutoffDate);
+    const filtered = this.events.filter((event) => event.timestamp >= cutoffDate);
     this.events.length = 0;
     this.events.push(...filtered);
 
     return initialLength - this.events.length;
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // #394: Contract reconciliation tracking
+  // ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Records a state reconciliation result for analytics tracking.
+   */
+  recordReconciliation(result: StateReconciliationResult): void {
+    this.reconciliationHistory.push(result);
+    this.logger.log(
+      `Reconciliation recorded for ${result.contractId}: consistent=${result.isConsistent}, discrepancies=${result.discrepancies.length}`,
+    );
+
+    // Limit history size
+    if (this.reconciliationHistory.length > 1000) {
+      this.reconciliationHistory.splice(0, this.reconciliationHistory.length - 1000);
+    }
+  }
+
+  /**
+   * Returns reconciliation history, optionally filtered by contract.
+   */
+  getReconciliationHistory(contractId?: string): StateReconciliationResult[] {
+    const history = [...this.reconciliationHistory];
+    history.sort(
+      (a, b) => b.reconciledAt.getTime() - a.reconciledAt.getTime(),
+    );
+    return contractId
+      ? history.filter((r) => r.contractId === contractId)
+      : history;
+  }
+
+  /**
+   * Returns a summary of all reconciliation activity.
+   */
+  getReconciliationSummary(): ReconciliationSummary {
+    let consistent = 0;
+    let inconsistent = 0;
+    let totalDiscrepancies = 0;
+    let lastAt: Date | null = null;
+
+    for (const result of this.reconciliationHistory) {
+      if (result.isConsistent) {
+        consistent++;
+      } else {
+        inconsistent++;
+      }
+      totalDiscrepancies += result.discrepancies.length;
+
+      if (!lastAt || result.reconciledAt > lastAt) {
+        lastAt = result.reconciledAt;
+      }
+    }
+
+    return {
+      totalReconciliations: this.reconciliationHistory.length,
+      consistentStateCount: consistent,
+      inconsistentStateCount: inconsistent,
+      lastReconciliationAt: lastAt,
+      totalDiscrepanciesFound: totalDiscrepancies,
+    };
   }
 }

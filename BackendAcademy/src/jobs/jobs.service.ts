@@ -1,25 +1,18 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { isFeatureEnabled } from '../config/env.schema';
 
 /**
  * Represents a parsed cron expression.
  */
 export interface CronSchedule {
-  /** Original cron expression string */
   expression: string;
-  /** Human-readable description */
   description: string;
-  /** Whether the expression is valid */
   isValid: boolean;
-  /** Validation error message if invalid */
   error?: string;
-  /** Next 5 run times (ISO strings) for preview */
   nextRuns: string[];
 }
 
-/**
- * Standard cron field: minute, hour, day-of-month, month, day-of-week
- */
 interface CronFields {
   minute: string;
   hour: string;
@@ -28,33 +21,66 @@ interface CronFields {
   dayOfWeek: string;
 }
 
+/**
+ * Result of a contract event replay job execution.
+ */
+export interface ReplayJobResult {
+  jobId: string;
+  contractId: string;
+  eventsProcessed: number;
+  status: 'completed' | 'failed';
+  executedAt: Date;
+  durationMs: number;
+  error?: string;
+}
+
 @Injectable()
 export class JobsService implements OnModuleInit {
   private readonly logger = new Logger(JobsService.name);
-
   private readonly schedules = new Map<string, CronSchedule>();
+
+  /** #394: History of replay job executions */
+  private readonly replayJobHistory: ReplayJobResult[] = [];
 
   constructor(private readonly configService: ConfigService) {}
 
   onModuleInit(): void {
     this.loadSchedules();
     this.validateAll();
+
+    // #394: Log replay availability
+    const replayEnabled = isFeatureEnabled(
+      this.configService.get<string>('CONTRACT_EVENT_REPLAY_ENABLED'),
+    );
+    if (replayEnabled) {
+      this.logger.log('Contract event replay jobs are ENABLED');
+    } else {
+      this.logger.log(
+        'Contract event replay jobs are DISABLED. ' +
+          'Set CONTRACT_EVENT_REPLAY_ENABLED=true to enable.',
+      );
+    }
   }
 
-  /**
-   * Loads cron schedules from configuration.
-   */
+  // ──────────────────────────────────────────────────────────────────
+  // Existing schedule management
+  // ──────────────────────────────────────────────────────────────────
+
   private loadSchedules(): void {
     const entries: Array<{ name: string; key: string }> = [
       { name: 'cleanup', key: 'CRON_CLEANUP_SCHEDULE' },
       { name: 'analytics', key: 'CRON_ANALYTICS_SCHEDULE' },
       { name: 'notifications', key: 'CRON_NOTIFICATIONS_SCHEDULE' },
+      // #394: Replay schedule for periodic event replay
+      { name: 'contract_replay', key: 'CRON_CONTRACT_REPLAY_SCHEDULE' },
     ];
 
     for (const entry of entries) {
       const raw = this.configService.get<string>(entry.key);
       if (!raw) {
-        this.logger.warn(`No cron expression configured for ${entry.name}, using default`);
+        this.logger.warn(
+          `No cron expression configured for ${entry.name}, using default`,
+        );
         continue;
       }
       const schedule = this.parseCron(raw, entry.name);
@@ -67,12 +93,6 @@ export class JobsService implements OnModuleInit {
     }
   }
 
-  /**
-   * Parses a standard 5-field cron expression and returns a CronSchedule.
-   *
-   * Format: minute hour day-of-month month day-of-week
-   * Each field supports: wildcard (*), step patterns (/n), comma-separated values, ranges (a-b), and single values.
-   */
   parseCron(expression: string, name: string): CronSchedule {
     const trimmed = expression.trim();
     const fields = trimmed.split(/\s+/);
@@ -95,7 +115,6 @@ export class JobsService implements OnModuleInit {
       dayOfWeek: fields[4],
     };
 
-    // Validate each field
     const validations: Array<{ field: string; value: string; min: number; max: number }> = [
       { field: 'minute', value: cronFields.minute, min: 0, max: 59 },
       { field: 'hour', value: cronFields.hour, min: 0, max: 23 },
@@ -107,7 +126,6 @@ export class JobsService implements OnModuleInit {
     const cronFieldValidator = /^(\*|(\*\/)?\d+|\d+(-\d+)?)(,\d+(-\d+)?)*$/;
 
     for (const v of validations) {
-      // Accept * and */n patterns
       if (v.value === '*' || v.value.startsWith('*/')) {
         const numPart = v.value.startsWith('*/') ? v.value.slice(2) : '0';
         if (!/^\d+$/.test(numPart)) {
@@ -116,14 +134,11 @@ export class JobsService implements OnModuleInit {
         continue;
       }
 
-      // Split commas for lists
       const parts = v.value.split(',');
       for (const part of parts) {
-        // Check format
         if (!cronFieldValidator.test(part)) {
           return this.invalidResult(trimmed, name, `${v.field}: invalid field "${v.value}"`);
         }
-        // Check ranges
         if (part.includes('-')) {
           const [start, end] = part.split('-').map(Number);
           if (start < v.min || end > v.max || start > end) {
@@ -157,9 +172,6 @@ export class JobsService implements OnModuleInit {
     };
   }
 
-  /**
-   * Validates all registered schedules and logs results.
-   */
   validateAll(): Array<{ name: string; valid: boolean; error?: string }> {
     const results: Array<{ name: string; valid: boolean; error?: string }> = [];
     for (const [name, schedule] of this.schedules) {
@@ -172,27 +184,65 @@ export class JobsService implements OnModuleInit {
     return results;
   }
 
-  /**
-   * Returns all registered schedules as CronSchedule objects.
-   */
   getAllSchedules(): CronSchedule[] {
     return Array.from(this.schedules.values());
   }
 
-  /**
-   * Returns a single schedule by name.
-   */
   getSchedule(name: string): CronSchedule | undefined {
     return this.schedules.get(name);
   }
 
+  // ──────────────────────────────────────────────────────────────────
+  // #394: Event replay job support
+  // ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Records a replay job execution result for audit trail.
+   */
+  recordReplayJob(result: ReplayJobResult): void {
+    this.replayJobHistory.push(result);
+    this.logger.log(
+      `Replay job recorded: ${result.jobId} (${result.status}) — ${result.eventsProcessed} events in ${result.durationMs}ms`,
+    );
+
+    // Limit history size
+    if (this.replayJobHistory.length > 1000) {
+      this.replayJobHistory.splice(0, this.replayJobHistory.length - 1000);
+    }
+  }
+
+  /**
+   * Returns replay job execution history.
+   */
+  getReplayJobHistory(limit?: number): ReplayJobResult[] {
+    const history = [...this.replayJobHistory];
+    history.sort(
+      (a, b) => b.executedAt.getTime() - a.executedAt.getTime(),
+    );
+    return limit ? history.slice(0, limit) : history;
+  }
+
+  /**
+   * Checks whether the contract replay feature is enabled.
+   */
+  isReplayEnabled(): boolean {
+    return isFeatureEnabled(
+      this.configService.get<string>('CONTRACT_EVENT_REPLAY_ENABLED'),
+    );
+  }
+
+  /**
+   * Checks whether contract ingestion is enabled.
+   */
+  isIngestionEnabled(): boolean {
+    return isFeatureEnabled(
+      this.configService.get<string>('CONTRACT_INGESTION_ENABLED'),
+    );
+  }
+
   // ── Private helpers ──────────────────────────────────────────────
 
-  private invalidResult(
-    expression: string,
-    name: string,
-    error: string,
-  ): CronSchedule {
+  private invalidResult(expression: string, name: string, error: string): CronSchedule {
     return {
       expression,
       description: `Invalid schedule for ${name}`,
@@ -224,8 +274,6 @@ export class JobsService implements OnModuleInit {
   }
 
   private computeNextRuns(_expression: string, count: number): string[] {
-    // Note: next-run times are approximated. Install the 'cron-parser' npm package
-    // for accurate cron-based scheduling: npm install cron-parser
     const runs: string[] = [];
     const now = new Date();
     for (let i = 1; i <= count; i++) {
