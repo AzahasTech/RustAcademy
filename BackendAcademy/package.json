@@ -9,7 +9,11 @@
     "start:dev": "nest start --watch",
     "lint": "eslint \"{src,test}/**/*.ts\"",
     "test": "jest",
-    "config:schema": "joi-to-typescript src/config/env.schema.ts > src/config/env.types.ts"
+    "config:schema": "joi-to-typescript src/config/env.schema.ts > src/config/env.types.ts",
+    "migration:preflight": "ts-node -r tsconfig-paths/register src/database/migration-cli.ts preflight",
+    "migration:rollback": "ts-node -r tsconfig-paths/register src/database/migration-cli.ts rollback",
+    "migration:history": "ts-node -r tsconfig-paths/register src/database/migration-cli.ts history",
+    "migration:dry-run": "ts-node -r tsconfig-paths/register src/database/migration-cli.ts dry-run"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.22",

@@ -32,8 +32,7 @@ import { MonitoringModule } from './monitoring/monitoring.module';
 import { SearchModule } from './search/search.module';
 import { PaymentsModule } from './payments/payments.module';
 import { I18nModule } from './i18n/i18n.module';
-import { JobsModule } from './jobs/jobs.module';
-import { MonitoringModule } from './monitoring/monitoring.module';
+import { DatabaseModule } from './database/database.module';
 import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({

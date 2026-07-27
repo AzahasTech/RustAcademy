@@ -1,5 +1,10 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, Inject, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { NotificationsService } from '../notifications/notifications.service';
+import {
+  NotificationPriority,
+  DeliveryContext,
+} from '../notifications/interfaces/notification-provider.interface';
 
 /**
  * Represents a parsed cron expression.
@@ -34,11 +39,16 @@ export class JobsService implements OnModuleInit {
 
   private readonly schedules = new Map<string, CronSchedule>();
 
-  constructor(private readonly configService: ConfigService) {}
+  constructor(
+    private readonly configService: ConfigService,
+    @Optional()
+    private readonly notificationsService?: NotificationsService,
+  ) {}
 
   onModuleInit(): void {
     this.loadSchedules();
     this.validateAll();
+    this.configureNotificationBatching();
   }
 
   /**
@@ -184,6 +194,55 @@ export class JobsService implements OnModuleInit {
    */
   getSchedule(name: string): CronSchedule | undefined {
     return this.schedules.get(name);
+  }
+
+  // ── Notification batching configuration (#386) ───────────────
+
+  /**
+   * Configures notification batching based on environment settings.
+   *
+   * Low-priority reminders (streak nudges, course suggestions, etc.)
+   * are grouped together to reduce noise and improve delivery efficiency.
+   */
+  private configureNotificationBatching(): void {
+    if (!this.notificationsService) return;
+
+    const batchEnabled = this.configService.get<string>('NOTIFICATION_BATCH_ENABLED', 'false');
+    const maxBatchSize = this.configService.get<number>('NOTIFICATION_BATCH_MAX_SIZE', 10);
+    const batchWindowMs = this.configService.get<number>('NOTIFICATION_BATCH_WINDOW_MS', 30_000);
+
+    this.notificationsService.configureBatch({
+      enabled: batchEnabled === 'true',
+      maxBatchSize,
+      batchWindowMs,
+    });
+
+    this.logger.log(
+      `Notification batching: enabled=${batchEnabled}, maxSize=${maxBatchSize}, windowMs=${batchWindowMs}`,
+    );
+  }
+
+  /**
+   * Triggers a batch flush of all pending low-priority notifications.
+   * This is called by the notifications cron schedule.
+   */
+  async flushNotificationBatch(): Promise<void> {
+    if (!this.notificationsService) {
+      this.logger.warn('NotificationsService not available for batch flush');
+      return;
+    }
+
+    const pendingCount = this.notificationsService.getPendingBatchCount();
+    if (pendingCount === 0) {
+      this.logger.debug('No pending notifications to flush');
+      return;
+    }
+
+    this.logger.log(`Flushing ${pendingCount} batched notifications`);
+    const result = await this.notificationsService.flushBatch();
+    this.logger.log(
+      `Batch ${result.batchId}: ${result.successCount}/${result.totalCount} delivered successfully`,
+    );
   }
 
   // ── Private helpers ──────────────────────────────────────────────

@@ -20,6 +20,18 @@ const config: Config = {
   // module-level Maps / caches don't leak between suites.
   resetModules: true,
 
+  // ── Migration test configuration (#398) ──────────────────
+  // Exclude boilerplate from coverage to focus on business logic
+  coveragePathIgnorePatterns: [
+    '/node_modules/',
+    '/dist/',
+    '/test/',
+    '\\.module\\.ts$',
+    '\\.dto\\.ts$',
+    '\\.entity\\.ts$',
+    'main\\.ts$',
+  ],
+
 };
 
 export default config;
