@@ -49,6 +49,7 @@ export class JobsService implements OnModuleInit {
       { name: 'cleanup', key: 'CRON_CLEANUP_SCHEDULE' },
       { name: 'analytics', key: 'CRON_ANALYTICS_SCHEDULE' },
       { name: 'notifications', key: 'CRON_NOTIFICATIONS_SCHEDULE' },
+      { name: 'cacheWarming', key: 'CRON_CACHE_WARMING_SCHEDULE' },
     ];
 
     for (const entry of entries) {
