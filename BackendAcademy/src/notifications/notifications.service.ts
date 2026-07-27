@@ -1,13 +1,34 @@
 import { Injectable } from '@nestjs/common';
 import { Notification } from './interfaces/notifications.interface';
 import { CreateNotificationDto } from './dto/create-notification.dto';
-import { NotificationPreferences } from './interfaces/preferences.interface';
-import { UpdateNotificationPreferencesDto } from './dto/update-preferences.dto';
+import { LocalizationService } from '../i18n/localization.service';
 
 @Injectable()
 export class NotificationsService {
   private notifications: Notification[] = [];
   private preferences: Map<string, NotificationPreferences> = new Map();
+
+  // ── Default localized notification templates ────────────────
+  static readonly TEMPLATES: Record<string, { titleKey: keyof import('../i18n/localization.service').LocalizationStrings; messageKey: keyof import('../i18n/localization.service').LocalizationStrings }> = {
+    welcome: {
+      titleKey: 'notification.welcome',
+      messageKey: 'notification.welcome',
+    },
+    milestone: {
+      titleKey: 'notification.milestone',
+      messageKey: 'notification.milestone',
+    },
+    submissionGraded: {
+      titleKey: 'notification.submissionGraded',
+      messageKey: 'notification.submissionGraded',
+    },
+    courseCompleted: {
+      titleKey: 'notification.courseCompleted',
+      messageKey: 'notification.courseCompleted',
+    },
+  };
+
+  constructor(private readonly l10n: LocalizationService) {}
 
   create(createNotificationDto: CreateNotificationDto): Notification {
     const newNotification: Notification = {
@@ -28,47 +49,23 @@ export class NotificationsService {
     return this.notifications.filter(n => n.userId === userId);
   }
 
-  upsertPreferences(userId: string, updateDto: UpdateNotificationPreferencesDto): NotificationPreferences {
-    const existing = this.preferences.get(userId) || {
-      userId,
-      email_alerts: false,
-      push_notifications: false,
-      marketing_updates: false,
-    };
-
-    const updated = { ...existing, ...updateDto };
-    this.preferences.set(userId, updated);
-    return updated;
-  }
-
-  getPreferences(userId: string): NotificationPreferences {
-    return this.preferences.get(userId) || {
-      userId,
-      email_alerts: false,
-      push_notifications: false,
-      marketing_updates: false,
-    };
-  }
-
-  sendNewDeviceNotification(userId: string, deviceInfo: string): void {
-    this.create({
-      userId,
-      title: 'New device login detected',
-      message: `A new device was used to access your account: ${deviceInfo}. If this wasn't you, please secure your account immediately.`,
-      type: 'security_alert',
-    });
-  }
-
-  sendPrivilegeChangeNotification(
+  /**
+   * Creates a localized notification using a predefined template.
+   */
+  createLocalized(
     userId: string,
-    previousRole: string,
-    newRole: string,
-  ): void {
-    this.create({
+    templateName: keyof typeof NotificationsService.TEMPLATES,
+    type: 'push' | 'in-app' = 'in-app',
+  ): Notification {
+    const template = NotificationsService.TEMPLATES[templateName];
+    if (!template) {
+      throw new Error(`Unknown notification template: ${templateName}`);
+    }
+    return this.create({
       userId,
-      title: 'Account privilege changed',
-      message: `Your account role was changed from ${previousRole} to ${newRole}.`,
-      type: 'account_alert',
+      type,
+      title: this.l10n.t(template.titleKey),
+      message: this.l10n.t(template.messageKey),
     });
   }
 }
