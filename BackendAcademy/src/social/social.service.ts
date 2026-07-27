@@ -317,4 +317,3 @@ export class SocialService {
     return normalized.startsWith('#') ? normalized.slice(1) : normalized;
   }
 }
-}
