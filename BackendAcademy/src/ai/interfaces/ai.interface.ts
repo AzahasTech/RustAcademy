@@ -26,3 +26,46 @@ export interface AiHintResponse {
   hintId: string;
   difficulty: number;
 }
+
+export interface AiChatRecord {
+  id: string;
+  userId: string;
+  sessionId: string;
+  messages: ChatMessage[];
+  startedAt: Date;
+  lastActivityAt: Date;
+  metadata?: Record<string, unknown>;
+}
+
+export interface VoiceInteractionResponse {
+  transcription: string;
+  confidence: number;
+  processedAt: Date;
+}
+
+export interface TtsResponse {
+  audioData: string;
+  format: string;
+  durationMs: number;
+}
+
+export interface RecommendationItem {
+  courseId: string;
+  score: number;
+  reason: string;
+}
+
+export interface ExplainabilityMetadata {
+  factors: string[];
+  confidence: number;
+  userSignalAge: number;
+  signalsUsed: string[];
+  modelVersion: string;
+}
+
+export interface AiRecommendationResponse {
+  userId: string;
+  recommendations: RecommendationItem[];
+  explainability: ExplainabilityMetadata;
+  generatedAt: Date;
+}

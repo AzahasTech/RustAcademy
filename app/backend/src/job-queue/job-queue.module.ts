@@ -25,6 +25,7 @@ import { ApiKeysModule } from "../api-keys/api-keys.module";
 import { ContractsModule } from "../contracts/contracts.module";
 import { TransactionsModule } from "../transactions/transactions.module";
 import { StellarModule } from "../stellar/stellar.module";
+import { AppConfigModule } from "../config/config.module";
 import {
   WebhookDeliveryHandler,
   RecurringPaymentHandler,
@@ -33,6 +34,11 @@ import {
   StellarReconnectHandler,
   RefundJobHandler,
 } from "./handlers";
+import {
+  WebhookDeliveryAdapter,
+  EmailDeliveryAdapter,
+  DownloadLinkAdapter,
+} from "./delivery";
 
 /**
  * Job Queue Module
@@ -66,6 +72,7 @@ import {
     forwardRef(() => LinksModule),
     forwardRef(() => ReconciliationModule),
     forwardRef(() => IngestionModule),
+    AppConfigModule,
   ],
   controllers: [JobAdminController],
   providers: [
@@ -82,6 +89,9 @@ import {
     ReconciliationHandler,
     StellarReconnectHandler,
     RefundJobHandler,
+    WebhookDeliveryAdapter,
+    EmailDeliveryAdapter,
+    DownloadLinkAdapter,
   ],
   exports: [
     JobQueueService,
@@ -94,6 +104,9 @@ import {
     ReconciliationHandler,
     StellarReconnectHandler,
     RefundJobHandler,
+    WebhookDeliveryAdapter,
+    EmailDeliveryAdapter,
+    DownloadLinkAdapter,
   ],
 })
 export class JobQueueModule {}

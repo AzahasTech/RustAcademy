@@ -6,6 +6,7 @@ import { LocalizationService } from '../i18n/localization.service';
 @Injectable()
 export class NotificationsService {
   private notifications: Notification[] = [];
+  private preferences: Map<string, NotificationPreferences> = new Map();
 
   // ── Default localized notification templates ────────────────
   static readonly TEMPLATES: Record<string, { titleKey: keyof import('../i18n/localization.service').LocalizationStrings; messageKey: keyof import('../i18n/localization.service').LocalizationStrings }> = {

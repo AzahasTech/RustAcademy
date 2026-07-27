@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { AnalyticsEvent } from './analytics.entity';
+import { RedisService } from '../redis/redis.service';
+import { v4 as uuidv4 } from 'uuid';
 
 export enum EventType {
   USER_REGISTERED = 'user_registered',
@@ -16,18 +18,51 @@ export enum EventType {
   TUTORIAL_COMPLETED = 'tutorial_completed',
   REWARD_CLAIMED = 'reward_claimed',
   LEADERBOARD_VIEWED = 'leaderboard_viewed',
+  API_KEY_CREATED = 'api_key_created',
+  API_KEY_REVOKED = 'api_key_revoked',
+  API_KEY_USED = 'api_key_used',
+  API_KEY_ANOMALY = 'api_key_anomaly',
+  SESSION_REVOKED = 'session_revoked',
+  DEVICE_BOUND = 'device_bound',
+  PRIVILEGE_CHANGED = 'privilege_changed',
 }
 
 @Injectable()
 export class AnalyticsService {
   private readonly events: AnalyticsEvent[] = [];
 
+  constructor(private readonly redisService?: RedisService) {}
+
   async trackEvent(event: Partial<AnalyticsEvent>): Promise<AnalyticsEvent> {
     const analyticsEvent = new AnalyticsEvent({
       ...event,
-      timestamp: new Date(),
+      id: event.id || uuidv4(),
+      timestamp: event.timestamp || new Date(),
     });
     this.events.push(analyticsEvent);
+
+    if (this.redisService && analyticsEvent.userId) {
+      const eventTypes = [analyticsEvent.eventType];
+      const interactionData: Record<string, any> = {
+        lastInteractionAt: new Date(),
+        interactionCount: 1,
+        eventTypes,
+      };
+
+      if (analyticsEvent.eventType === EventType.COURSE_ENROLLED) {
+        interactionData.recentCourses = analyticsEvent.properties?.courseId
+          ? [analyticsEvent.properties.courseId]
+          : [];
+      }
+      if (analyticsEvent.eventType === EventType.CHALLENGE_COMPLETED) {
+        interactionData.recentChallenges = analyticsEvent.properties?.challengeId
+          ? [analyticsEvent.properties.challengeId]
+          : [];
+      }
+
+      await this.redisService.refreshUserSnapshot(analyticsEvent.userId, interactionData);
+    }
+
     return analyticsEvent;
   }
 
@@ -84,12 +119,12 @@ export class AnalyticsService {
   async clearOldEvents(daysToKeep: number = 30): Promise<number> {
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - daysToKeep);
-    
+
     const initialLength = this.events.length;
     const filtered = this.events.filter(event => event.timestamp >= cutoffDate);
     this.events.length = 0;
     this.events.push(...filtered);
-    
+
     return initialLength - this.events.length;
   }
 }

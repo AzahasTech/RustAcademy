@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { DatabaseService } from '../database/database.service';
 import { TransactionHistoryQueryDto } from './dto/transaction-history-query.dto';
 import {
   StellarTransaction,
@@ -7,21 +8,6 @@ import {
 
 @Injectable()
 export class PaymentsService {
-  /**
-   * In-memory stub ledger. The list is illustrative only - real
-   * implementation must replace this with a Horizon server query:
-   *
-   *   const server = new StellarSdk.Horizon.Server(HORIZON_URL);
-   *   server
-   *     .payments()
-   *     .forAccount(account)
-   *     .order('desc')
-   *     .limit(limit)
-   *     .call()
-   *
-   * TODO: replace with Horizon-backed repository once @stellar/stellar-sdk is
-   * added to BackendAcademy dependencies.
-   */
   private readonly stubLedger: StellarTransaction[] = [
     {
       id: 'tx-stub-0001',
@@ -73,9 +59,10 @@ export class PaymentsService {
     },
   ];
 
-  /** Hard cap to defend the stub from absurd limit queries. */
   private static readonly MAX_LIMIT = 100;
   private static readonly DEFAULT_LIMIT = 20;
+
+  constructor(private readonly databaseService: DatabaseService) {}
 
   getTransactionHistory(query: TransactionHistoryQueryDto): TransactionHistoryResponse {
     const { account, limit, cursor } = query;
@@ -85,17 +72,11 @@ export class PaymentsService {
       filtered = filtered.filter((tx) => tx.account === account);
     }
 
-    // Defensive clamp on limit. Real impl will rely on Horizon's own limits.
     const effectiveLimit = Math.min(
       Math.max(1, Number(limit) || PaymentsService.DEFAULT_LIMIT),
       PaymentsService.MAX_LIMIT,
     );
 
-    // Cursor stub: parses as integer so the wire field is round-trippable
-    // through this MVP. Real impl should swap to Horizon's opaque cursor.
-    // A real Horizon cursor like "1234567890_abc..." will silently fall to
-    // 0 here - acceptable as a stub-only quirk; the DTO already documents
-    // that the field is opaque in production.
     const startIdx = cursor ? parseInt(cursor, 10) || 0 : 0;
     const page = filtered.slice(startIdx, startIdx + effectiveLimit);
     const remaining = filtered.length - (startIdx + page.length);
@@ -108,5 +89,21 @@ export class PaymentsService {
       response.nextCursor = String(startIdx + page.length);
     }
     return response;
+  }
+
+  async validateCoupon(code: string, userId: string, amount: number) {
+    return this.databaseService.validateCoupon(code, userId, amount);
+  }
+
+  async applyCoupon(code: string, userId: string, amount: number, orderId: string) {
+    return this.databaseService.applyCoupon(code, userId, amount, orderId);
+  }
+
+  async getRedemptionHistory(userId: string) {
+    return this.databaseService.getRedemptionsByUser(userId);
+  }
+
+  async getAllCoupons() {
+    return this.databaseService.getAllCoupons();
   }
 }

@@ -1,9 +1,10 @@
-# Issue #432: Upgrade Safety Gate Implementation Summary
+# Issue #432 + #318: Upgrade Safety Gate Implementation Summary
 
 **Status**: Complete  
 **Complexity**: High (200 points)  
 **Wave**: 5 – Lifecycle Management  
-**Date**: May 29, 2026
+**Date**: May 29, 2026  
+**Updated**: July 20, 2026 (Issue #318 – gate master switch + regression coverage)
 
 ---
 
@@ -158,10 +159,13 @@ ORDER BY timestamp
 
 | Function                         | Admin-Only | Window-Gated | Emits Event           |
 | -------------------------------- | ---------- | ------------ | --------------------- |
-| `set_upgrade_window(start, end)` | ✅         | ❌           | ❌                    |
+| `set_upgrade_window(start, end)` | ✅         | ❌           | ✅ `UpgradeWindowSet` |
 | `get_upgrade_window()`           | ❌         | ❌           | ❌                    |
 | `start_upgrade(new_version)`     | ✅         | ✅           | ✅ `UpgradeStarted`   |
 | `complete_upgrade(new_version)`  | ✅         | ❌           | ✅ `UpgradeCompleted` |
+| `set_upgrade_gate(enabled)`      | ✅         | ❌           | ❌                    |
+| `check_upgrade_safety()`         | ❌         | ❌           | ❌ (view)             |
+| `get_upgrade_status()`           | ❌         | ❌           | ❌ (view)             |
 
 ---
 
@@ -203,7 +207,7 @@ Step 3b: Admin calls complete_upgrade(new_version)
 
 All tests use the `GoldenState` fixture (legacy v0 contract pre-populated with escrows, fees, privacy flags).
 
-**Test Suite: `upgrade_safety_gate_*`** (5 tests)
+**Test Suite: `upgrade_safety_gate_*`** (12 tests)
 
 | Test Name                          | Lines   | What It Validates                   |
 | ---------------------------------- | ------- | ----------------------------------- |
@@ -212,6 +216,14 @@ All tests use the `GoldenState` fixture (legacy v0 contract pre-populated with e
 | `emits_events`                     | 739–770 | AC3: event emission                 |
 | `blocks_double_start`              | 772–798 | Safety: concurrent upgrades blocked |
 | `non_admin_blocked`                | 800–820 | Security: admin-only enforcement    |
+| `blocks_when_gate_disabled`        | 318     | Gate master switch blocks upgrades  |
+| `succeeds_when_gate_enabled`       | 318     | Gate master switch allows upgrades  |
+| `check_upgrade_safety_reports_*`   | 318     | Safety report correctness (5 tests) |
+| `get_upgrade_status_includes_gate` | 318     | Status includes gate_enabled field  |
+| `non_admin_cannot_set_gate`        | 318     | Gate admin-only enforcement         |
+| `toggle_preserves_contract_state`  | 318     | Gate toggle doesn't corrupt state   |
+| `full_lifecycle`                   | 318     | End-to-end gate lifecycle           |
+| `migrate_independent_of_gate`      | 318     | migrate() not affected by gate      |
 
 **Run Tests**:
 

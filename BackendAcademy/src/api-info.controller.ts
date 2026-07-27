@@ -14,6 +14,17 @@ export class ApiInfoController {
       locale: this.l10n.getLocale(),
       availableLocales: this.l10n.getAvailableLocales(),
       docs: '/api/docs',
+      features: {
+        ai: {
+          recommendations: true,
+          explainability: true,
+          modelVersion: 'rustacademy-recommender-v2',
+        },
+        payments: {
+          coupons: true,
+          redemptionHistory: true,
+        },
+      },
     };
   }
 }

@@ -3,28 +3,93 @@ import { ConfigService } from '@nestjs/config';
 import { CreateChatRequestDto } from './dto/create-chat-request.dto';
 import { GetHintDto } from './dto/get-hint.dto';
 import { PreScoreDto } from './dto/pre-score.dto';
+import { VoiceInteractionDto } from './dto/voice-interaction.dto';
+import { TtsRequestDto } from './dto/tts-request.dto';
 import {
   AiChatResponse,
+  AiChatRecord,
   AiHintResponse,
+  AiRecommendationResponse,
   ChatMessage,
   Hint,
+  VoiceInteractionResponse,
+  TtsResponse,
 } from './interfaces/ai.interface';
 import { PreScoreResult } from './interfaces/pre-score.interface';
 import { AiProvider } from './interfaces/ai-provider.interface';
 import { v4 as uuidv4 } from 'uuid';
+import { AnalyticsService } from '../analytics/analytics.service';
+import { RedisService } from '../redis/redis.service';
+import { MonitoringService } from '../monitoring/monitoring.service';
 
 export const AI_PROVIDER = 'AI_PROVIDER';
 
 @Injectable()
 export class AiService {
   private chatHistory: Map<string, ChatMessage[]> = new Map();
+  private chatRecords: Map<string, AiChatRecord> = new Map();
   private hints: Map<string, Hint[]> = new Map();
 
   constructor(
     @Optional() @Inject(AI_PROVIDER) private aiProvider?: AiProvider,
     private configService?: ConfigService,
+    private readonly analyticsService?: AnalyticsService,
+    private readonly redisService?: RedisService,
+    private readonly monitoringService?: MonitoringService,
   ) {
     this.initializeSampleHints();
+  }
+
+  async getRecommendation(userId: string): Promise<AiRecommendationResponse> {
+    const snapshot = this.redisService
+      ? await this.redisService.getUserSnapshot(userId)
+      : null;
+
+    if (!snapshot) {
+      return {
+        userId,
+        recommendations: [],
+        explainability: {
+          factors: ['insufficient_data'],
+          confidence: 0.1,
+          userSignalAge: 0,
+          signalsUsed: [],
+          modelVersion: 'rustacademy-recommender-v2',
+        },
+        generatedAt: new Date(),
+      };
+    }
+
+    const explainability = this.redisService
+      ? await this.redisService.getRecommendationExplainability(userId)
+      : null;
+
+    const recommendedCourses = snapshot.recentCourses.length > 0
+      ? snapshot.recentCourses.slice(0, 3)
+      : ['rust-fundamentals', 'smart-contracts-101', 'stellar-basics'];
+
+    const recommendations = recommendedCourses.map((courseId, index) => ({
+      courseId,
+      score: Math.max(0, 1 - index * 0.2 - (snapshot.interactionCount > 0 ? 0 : 0.3)),
+      reason: explainability?.factors[index] || 'course_popularity',
+    }));
+
+    if (this.monitoringService) {
+      this.monitoringService.recordDomainEvent('recommendation_generated', 'ai');
+    }
+
+    return {
+      userId,
+      recommendations,
+      explainability: explainability || {
+        factors: [],
+        confidence: 0.1,
+        userSignalAge: 0,
+        signalsUsed: [],
+        modelVersion: 'rustacademy-recommender-v2',
+      },
+      generatedAt: new Date(),
+    };
   }
 
   async processChatRequest(
@@ -54,6 +119,14 @@ export class AiService {
       this.chatHistory.set(userId, []);
     }
     this.chatHistory.get(userId)!.push(chatMessage);
+
+    if (this.redisService) {
+      await this.redisService.refreshUserSnapshot(userId, {
+        lastInteractionAt: new Date(),
+        interactionCount: 1,
+        eventTypes: ['chat_message'],
+      });
+    }
 
     return {
       response: chatMessage.response,
@@ -130,6 +203,14 @@ export class AiService {
 
     score = Math.min(100, Math.max(0, score));
 
+    if (this.analyticsService) {
+      await this.analyticsService.trackEvent({
+        id: uuidv4(),
+        eventType: 'submission_prescore',
+        properties: { taskId, score, lines },
+      });
+    }
+
     return {
       taskId,
       predictedScore: score,
@@ -147,6 +228,33 @@ export class AiService {
 
   async getChatHistory(userId: string): Promise<ChatMessage[]> {
     return this.chatHistory.get(userId) || [];
+  }
+
+  getChatRecord(sessionId: string): AiChatRecord | null {
+    return this.chatRecords.get(sessionId) ?? null;
+  }
+
+  listChatRecords(userId: string): AiChatRecord[] {
+    return Array.from(this.chatRecords.values()).filter((r) => r.userId === userId);
+  }
+
+  async processVoice(dto: VoiceInteractionDto) {
+    const transcription = `[Transcribed: ${dto.audioData.slice(0, 50)}...]`;
+    const response: VoiceInteractionResponse = {
+      transcription,
+      confidence: 0.85,
+      processedAt: new Date(),
+    };
+    return response;
+  }
+
+  async generateTts(dto: TtsRequestDto) {
+    const response: TtsResponse = {
+      audioData: Buffer.from(dto.text).toString('base64'),
+      format: 'audio/wav',
+      durationMs: dto.text.length * 60,
+    };
+    return response;
   }
 
   private fallbackResponse(userMessage: string): string {

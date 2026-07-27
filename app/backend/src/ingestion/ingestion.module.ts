@@ -3,6 +3,8 @@ import { Module, forwardRef } from "@nestjs/common";
 import { SupabaseModule } from "../supabase/supabase.module";
 import { JobQueueModule } from "../job-queue/job-queue.module";
 import { MetricsModule } from "../metrics/metrics.module";
+import { SentryModule } from "../sentry/sentry.module";
+import { ContractsModule } from "../contracts/contracts.module";
 import { CursorRepository } from "./cursor.repository";
 import { EscrowEventRepository } from "./escrow-event.repository";
 import { PrivacyEventRepository } from "./privacy-event.repository";
@@ -13,15 +15,18 @@ import { SorobanEventParser } from "./soroban-event.parser";
 import { StellarIngestionService } from "./stellar-ingestion.service";
 import { SorobanEventIndexerService } from "./soroban-event-indexer.service";
 import { SorobanIndexerController } from "./soroban-indexer.controller";
-import { IngestionBootstrapService } from "./ingestion-bootstrap.service";
+import { SchemaObservabilityService } from "./schema-observability.service";
+import { ParserHealthController } from "./parser-health.controller";
 
 @Module({
   imports: [
     SupabaseModule,
     forwardRef(() => JobQueueModule),
     MetricsModule,
+    SentryModule,
+    ContractsModule,
   ],
-  controllers: [SorobanIndexerController],
+  controllers: [SorobanIndexerController, ParserHealthController],
   providers: [
     CursorRepository,
     EscrowEventRepository,
@@ -32,7 +37,7 @@ import { IngestionBootstrapService } from "./ingestion-bootstrap.service";
     SorobanEventParser,
     StellarIngestionService,
     SorobanEventIndexerService,
-    IngestionBootstrapService,
+    SchemaObservabilityService,
   ],
   exports: [
     StellarIngestionService,
@@ -40,6 +45,7 @@ import { IngestionBootstrapService } from "./ingestion-bootstrap.service";
     SorobanEventParser,
     CursorRepository,
     EscrowEventRepository,
+    SchemaObservabilityService,
   ],
 })
 export class IngestionModule {}

@@ -1,6 +1,6 @@
 # Upgrade Safety Gate – Test Documentation
 
-**Issue #432** | Test suite for upgrade window gating and post-upgrade invariants
+**Issue #432 + #318** | Test suite for upgrade window gating, post-upgrade invariants, and migration regression
 
 ---
 
@@ -281,6 +281,79 @@ LIMIT 1;
 
 ## Safety & Edge Case Tests
 
+### Test: Upgrade Gate Master Switch (Issue #318)
+
+**Tests**: `upgrade_safety_gate_blocks_when_gate_disabled`, `upgrade_safety_gate_succeeds_when_gate_enabled`
+
+**Scenario**: Verify that the `set_upgrade_gate` master switch controls whether upgrades can proceed.
+
+**Test Steps**:
+
+1. **Disable Gate**
+
+   ```rust
+   client.set_upgrade_gate(&gs.admin, &false);
+   ```
+
+2. **Attempt Upgrade (Should Fail)**
+
+   ```rust
+   let result = client.try_start_upgrade(&gs.admin, &CURRENT_CONTRACT_VERSION, &dummy_hash);
+   assert!(result.is_err(), "start_upgrade must fail when gate is disabled");
+   ```
+
+3. **Re-enable Gate**
+
+   ```rust
+   client.set_upgrade_gate(&gs.admin, &true);
+   client.start_upgrade(&gs.admin, &CURRENT_CONTRACT_VERSION, &dummy_hash);
+   ```
+
+**Gate Enforcement**: ✅ Master switch controls upgrade eligibility.
+
+---
+
+### Test: check_upgrade_safety View (Issue #318)
+
+**Tests**: `upgrade_safety_gate_check_upgrade_safety_reports_version`, `check_reports_unsafe_*`
+
+**Scenario**: Verify that `check_upgrade_safety()` returns correct safety reports for various states.
+
+**Validated Reports**:
+- Safe when gate enabled + window active + no in-progress + valid version
+- Unsafe when gate disabled
+- Unsafe when no window set
+- Unsafe when upgrade in progress
+- Unsafe when fee invariants violated
+
+---
+
+### Test: get_upgrade_status (Issue #318)
+
+**Test**: `upgrade_safety_gate_get_upgrade_status_includes_gate_enabled`
+
+**Scenario**: Verify that `get_upgrade_status()` returns the `gate_enabled` field reflecting current state.
+
+---
+
+### Test: Storage Layout Preservation (Issue #318)
+
+**Test**: `upgrade_safety_gate_toggle_preserves_contract_state`
+
+**Scenario**: Verify that toggling the upgrade gate does not affect escrow data, fee config, or privacy settings.
+
+---
+
+### Test: migrate() Independence (Issue #318)
+
+**Test**: `upgrade_safety_gate_migrate_works_independently_of_gate`
+
+**Scenario**: Verify that `migrate()` works regardless of gate setting (gate only controls `start_upgrade`).
+
+---
+
+## Safety & Edge Case Tests
+
 ### Test: Double-Start Prevention
 
 **Test**: `upgrade_safety_gate_blocks_double_start` (lines 772–798)
@@ -418,15 +491,22 @@ cargo test upgrade_safety_gate_ -- --nocapture
 **Expected Output**:
 
 ```
-running 5 tests
+running 12 tests
 
 test upgrade_safety_gate_blocks_upgrade_outside_window ... ok
 test upgrade_safety_gate_post_upgrade_invariants_enforced ... ok
 test upgrade_safety_gate_emits_events ... ok
 test upgrade_safety_gate_blocks_double_start ... ok
 test upgrade_safety_gate_non_admin_blocked ... ok
+test upgrade_safety_gate_blocks_when_gate_disabled ... ok
+test upgrade_safety_gate_succeeds_when_gate_enabled ... ok
+test upgrade_safety_gate_check_upgrade_safety_reports_version ... ok
+test upgrade_safety_gate_get_upgrade_status_includes_gate_enabled ... ok
+test upgrade_safety_gate_non_admin_cannot_set_gate ... ok
+test upgrade_safety_gate_toggle_preserves_contract_state ... ok
+test upgrade_safety_gate_full_lifecycle ... ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured
 
    Doc-tests  RustAcademy: 0 passed; 0 failed; 0 ignored; 0 measured
 ```

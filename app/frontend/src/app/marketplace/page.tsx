@@ -1,14 +1,17 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { UsernameCard } from "@/components/UsernameCard";
 import { ListingDetailModal } from "@/components/ListingDetailModal";
-import { fetchListings, MarketplaceListing } from "@/hooks/marketplaceApi";
+import type { MarketplaceListing } from "@/hooks/marketplaceApi";
+import { useMarketplaceApi } from "@/hooks/MarketplaceApiContext";
+import { useRealtimeApi } from "@/hooks/RealtimeApiContext";
 import { useWatchlist } from "@/contexts/WatchlistContext";
-import { useRealtimeUpdates } from "@/hooks/useRealtimeUpdates";
 import Link from "next/link";
 import { WatchlistProvider } from "@/contexts/WatchlistContext";
+import { MarketplaceApiProvider } from "@/hooks/MarketplaceApiContext";
+import { RealtimeApiProvider } from "@/hooks/RealtimeApiContext";
 
 const BidModal = dynamic(
   () => import("@/components/BidModal").then((mod) => mod.BidModal),
@@ -80,43 +83,59 @@ function MarketplacePageContent() {
   const [search, setSearch] = useState("");
   const [activeCategory, setActiveCategory] = useState<Category>("all");
   const [sortKey, setSortKey] = useState("ending");
-  const [activeListing, setActiveListing] = useState<MarketplaceListing | null>(
-    null,
-  );
-  const [detailListing, setDetailListing] = useState<MarketplaceListing | null>(
-    null,
-  );
+  const [activeListingId, setActiveListingId] = useState<string | null>(null);
+  const [detailListingId, setDetailListingId] = useState<string | null>(null);
   const [showWatchlistOnly, setShowWatchlistOnly] = useState(false);
 
+  // Modals hold a listing id, not a snapshot, so realtime bid updates keep
+  // the open modal (current bid, minimum bid) from going stale.
+  const activeListing = useMemo(
+    () => listings.find((l) => l.id === activeListingId) ?? null,
+    [listings, activeListingId],
+  );
+  const detailListing = useMemo(
+    () => listings.find((l) => l.id === detailListingId) ?? null,
+    [listings, detailListingId],
+  );
+  const [showWatchlistOnly, setShowWatchlistOnly] = useState(false);
+  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+
   const { watchlist, isInWatchlist, toggleWatchlist } = useWatchlist();
-  const {
-    isConnected,
-    lastUpdate,
-    subscribeToListing,
-    unsubscribeFromListing,
-    onBidUpdate,
-  } = useRealtimeUpdates();
+
+  // Consume providers from context — no direct imports of concrete providers
+  const marketplaceApi = useMarketplaceApi();
+  const realtimeApi = useRealtimeApi();
+
+  // Stable connection-status derived from the provider
+  const isConnected = realtimeApi.isConnected;
 
   useEffect(() => {
-    fetchListings().then((data) => {
+    marketplaceApi.fetchListings().then((data) => {
       setListings(data);
       setLoading(false);
     });
-  }, []);
+  }, [marketplaceApi]);
 
-  // Subscribe to real-time updates for all listings
+  // Latest listings, readable from effects without being an effect dependency.
+  const listingsRef = useRef<MarketplaceListing[]>([]);
   useEffect(() => {
     if (listings.length > 0) {
-      listings.forEach((listing) => subscribeToListing(listing.id));
+      listings.forEach((listing) =>
+        realtimeApi.subscribeToListing(listing.id),
+      );
       return () => {
-        listings.forEach((listing) => unsubscribeFromListing(listing.id));
+        listings.forEach((listing) =>
+          realtimeApi.unsubscribeFromListing(listing.id),
+        );
       };
     }
-  }, [listings, subscribeToListing, unsubscribeFromListing]);
+  }, [listings, realtimeApi]);
 
-  // Handle real-time bid updates
+  // Handle real-time bid updates. applyBidUpdate discards stale, duplicate,
+  // and out-of-order deliveries so bidCount only moves for genuinely new bids.
   useEffect(() => {
-    const unsubscribe = onBidUpdate((update) => {
+    const unsubscribe = realtimeApi.onBidUpdate((update) => {
+      setLastUpdate(update.timestamp);
       setListings((prev) =>
         prev.map((listing) =>
           listing.id === update.listingId
@@ -131,43 +150,42 @@ function MarketplacePageContent() {
     });
 
     return unsubscribe;
-  }, [onBidUpdate]);
+  }, [realtimeApi]);
 
-  function handleBidSuccess(username: string, amount: number) {
-    setListings((prev) =>
-      prev.map((l) =>
-        l.username === username
-          ? { ...l, currentBid: amount, bidCount: l.bidCount + 1 }
-          : l,
-      ),
-    );
-  }
+  const handleBidSuccess = useCallback(
+    (username: string, amount: number) => {
+      setListings((prev) =>
+        prev.map((l) =>
+          l.username === username
+            ? { ...l, currentBid: amount, bidCount: l.bidCount + 1 }
+            : l,
+        ),
+      );
+    },
+    [],
+  );
 
   function handleOpenBid(listing: MarketplaceListing) {
-    setDetailListing(null);
-    setActiveListing(listing);
+    setDetailListingId(null);
+    setActiveListingId(listing.id);
   }
 
   const filtered = useMemo(() => {
     let result = listings;
 
-    // Filter by watchlist if enabled
     if (showWatchlistOnly) {
       result = result.filter((listing) => isInWatchlist(listing.id));
     }
 
-    // Filter by category
     if (activeCategory !== "all") {
       result = result.filter((l) => l.category === activeCategory);
     }
 
-    // Filter by search
     if (search.trim()) {
       const q = search.toLowerCase().trim();
       result = result.filter((l) => l.username.includes(q));
     }
 
-    // Sort results
     switch (sortKey) {
       case "ending":
         result = [...result].sort(
@@ -446,7 +464,7 @@ function MarketplacePageContent() {
                 key={listing.id}
                 listing={listing}
                 onBid={handleOpenBid}
-                onViewDetails={setDetailListing}
+                onViewDetails={(l) => setDetailListingId(l.id)}
               />
             ))}
           </div>
@@ -456,7 +474,7 @@ function MarketplacePageContent() {
       <ListingDetailModal
         listing={detailListing}
         isWatched={detailListing ? isInWatchlist(detailListing.id) : false}
-        onClose={() => setDetailListing(null)}
+        onClose={() => setDetailListingId(null)}
         onToggleWatchlist={(listing) =>
           toggleWatchlist(listing.id, listing.username)
         }
@@ -466,10 +484,10 @@ function MarketplacePageContent() {
       {/* ── BID MODAL ─────────────────────────────── */}
       <BidModal
         listing={activeListing}
-        onClose={() => setActiveListing(null)}
+        onClose={() => setActiveListingId(null)}
         onBidSuccess={(username, amount) => {
           handleBidSuccess(username, amount);
-          setTimeout(() => setActiveListing(null), 2500);
+          setTimeout(() => setActiveListingId(null), 2500);
         }}
       />
     </div>
@@ -478,8 +496,13 @@ function MarketplacePageContent() {
 
 export default function MarketplacePage() {
   return (
-    <WatchlistProvider>
-      <MarketplacePageContent />
+    <WatchlistProvider userId="demo_user">
+      {/* Both API providers wrap the content so all children can use the hooks */}
+      <MarketplaceApiProvider>
+        <RealtimeApiProvider>
+          <MarketplacePageContent />
+        </RealtimeApiProvider>
+      </MarketplaceApiProvider>
     </WatchlistProvider>
   );
 }

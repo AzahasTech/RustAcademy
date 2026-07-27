@@ -207,6 +207,14 @@ export class AppConfigService {
   }
 
   /**
+   * Explicit ingestion boot gate.
+   * Contract ingestion only starts automatically when this flag is enabled.
+   */
+  get ingestionEnabled(): boolean {
+    return this.configService.get("INGESTION_ENABLED", { infer: true });
+  }
+
+  /**
    * Sentry DSN for error reporting. Undefined means Sentry is disabled.
    */
   get sentryDsn(): string | undefined {
@@ -273,5 +281,60 @@ export class AppConfigService {
     return this.configService.get("INDEXER_LAG_GUARD_OVERRIDE", {
       infer: true,
     });
+  }
+
+  /**
+   * Whether the reconciliation module is enabled
+   */
+  get reconciliationEnabled(): boolean {
+    return this.configService.get("FEATURES_RECONCILIATION_ENABLED", {
+      infer: true,
+    });
+  }
+
+  /**
+   * Whether the notifications module is enabled
+   */
+  get notificationsEnabled(): boolean {
+    return this.configService.get("FEATURES_NOTIFICATIONS_ENABLED", {
+      infer: true,
+    });
+  }
+
+  /**
+    * Whether the developer routes/module is enabled
+    */
+  get developerRoutesEnabled(): boolean {
+    return this.configService.get("FEATURES_DEVELOPER_ROUTES_ENABLED", {
+      infer: true,
+    });
+  }
+
+  /**
+   * Supabase Storage bucket for exported files
+   */
+  get exportStorageBucket(): string | undefined {
+    return this.configService.get("EXPORT_STORAGE_BUCKET", { infer: true });
+  }
+
+  /**
+   * Signed URL expiry for export download links (milliseconds)
+   */
+  get exportLinkExpiryMs(): number {
+    return this.configService.get("EXPORT_LINK_EXPIRY_MS", { infer: true });
+  }
+
+  /**
+   * HTTP timeout for webhook export delivery (milliseconds)
+   */
+  get exportWebhookTimeoutMs(): number {
+    return this.configService.get("EXPORT_WEBHOOK_TIMEOUT_MS", { infer: true });
+  }
+
+  /**
+   * Base URL for constructing absolute download links
+   */
+  get appBaseUrl(): string | undefined {
+    return this.configService.get("APP_BASE_URL", { infer: true });
   }
 }
