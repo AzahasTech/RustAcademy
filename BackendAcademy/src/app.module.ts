@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, MiddlewareConsumer, NestModule } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
@@ -22,7 +22,6 @@ import { OnboardingModule } from './onboarding/onboarding.module';
 import { LessonModule } from './lessons/lesson.module';
 import { TaskModule } from './tasks/task.module';
 import { CourseModule } from './courses';
-import { JobsModule } from './jobs/jobs.module';
 import { LoggingModule } from './logging/logging.module';
 import { ProgressModule } from './courses/progress/progress.module';
 import { AppConfigModule } from './config/config.module';
@@ -34,6 +33,7 @@ import { PaymentsModule } from './payments/payments.module';
 import { I18nModule } from './i18n/i18n.module';
 import { DatabaseModule } from './database/database.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { CorrelationIdMiddleware } from './common/correlation-id.middleware';
 
 @Module({
   imports: [
@@ -67,7 +67,6 @@ import { NotificationsModule } from './notifications/notifications.module';
     TaskModule,
     CourseModule,
     AssetsModule,
-    JobsModule,
     LoggingModule,
     PathfindingModule,
     MonitoringModule,
@@ -75,8 +74,6 @@ import { NotificationsModule } from './notifications/notifications.module';
     SearchModule,
     PaymentsModule,
     I18nModule,
-    JobsModule,
-    MonitoringModule,
     NotificationsModule,
   ],
   controllers: [AppController, ApiInfoController],
@@ -88,4 +85,9 @@ import { NotificationsModule } from './notifications/notifications.module';
     },
   ],
 })
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(CorrelationIdMiddleware).forRoutes('*');
+  }
+}
 export class AppModule {}
