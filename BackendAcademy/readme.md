@@ -90,12 +90,77 @@ Add a new entry to the `STRINGS` map in `src/i18n/localization.service.ts` with 
 
 - `src/` — Application source code (NestJS modules, controllers, services)
 - `src/config/` — Configuration and environment validation
+- `src/database/` — Database module, migration service with preflight validation and rollback
 - `src/i18n/` — Localization module
-- `src/jobs/` — Background job scheduling with cron validation
+- `src/jobs/` — Background job scheduling with cron validation and notification batching
 - `src/monitoring/` — Metrics and observability
+- `src/notifications/` — Notification delivery with provider abstraction (email, push, in-app) and batching
 - `test/` — Test files
 
 See `app/backend/` for the primary backend implementation and conventions.
+
+## Database Migrations (#398)
+
+The `MigrationService` provides preflight validation and rollback awareness for database migrations:
+
+### Migration Scripts
+
+| Script | Description |
+|---|---|
+| `pnpm migration:preflight` | Run preflight checks before applying migrations |
+| `pnpm migration:rollback` | Roll back the most recent migration |
+| `pnpm migration:history` | View migration history |
+| `pnpm migration:dry-run` | Simulate a rollback without executing |
+
+### Preflight Validation
+
+The migration service performs these checks before applying changes:
+
+1. **Database Connectivity** — Verifies the database is reachable
+2. **Schema State** — Inspects current schema for compatibility
+3. **Pending Migrations** — Lists migrations waiting to be applied
+4. **Environment Configuration** — Validates environment variables
+5. **Destructive Migration Risk** — Detects potentially destructive operations
+
+### Rollback Plan
+
+Each preflight check generates a rollback plan describing the steps needed to revert the most recent migrations. Destructive migrations (DROP, TRUNCATE) are flagged as non-reversible.
+
+## Notification Providers (#388)
+
+Notifications are delivered through a centralized provider interface (`INotificationProvider`), supporting multiple channels:
+
+| Provider | ID | Description |
+|---|---|---|
+| Email | `email` | Sends notifications via email with template personalization |
+| Push | `push` | Delivers push notifications to user devices |
+| In-App | `in-app` | Stores notifications in the user's in-app feed |
+
+Configure enabled providers via `NOTIFICATION_PROVIDERS` (comma-separated: `email,push,in-app`).
+
+## Email Template Fallbacks (#387)
+
+Email templates use `{{placeholder}}` syntax for personalization. When user data is incomplete,
+missing fields are replaced with sensible defaults so content never renders blank:
+
+| Placeholder | Fallback |
+|---|---|
+| `{{name}}` | "RustAcademy Learner" |
+| `{{courseName}}` | "your course" |
+| `{{milestoneName}}` | "a new milestone" |
+| `{{submissionTitle}}` | "your submission" |
+| Any unrecognized key | `[key]` (safe bracket notation) |
+
+## Notification Batching (#386)
+
+Low-priority reminders (streak nudges, course suggestions) can be grouped into batches
+to reduce noise and improve delivery efficiency:
+
+| Variable | Default | Description |
+|---|---|---|
+| `NOTIFICATION_BATCH_ENABLED` | `false` | Enable batching |
+| `NOTIFICATION_BATCH_MAX_SIZE` | `10` | Max notifications per batch |
+| `NOTIFICATION_BATCH_WINDOW_MS` | `30000` | Auto-flush window in milliseconds |
 
 ---
 

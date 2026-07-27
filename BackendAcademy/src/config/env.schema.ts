@@ -165,4 +165,35 @@ export const validationSchema = Joi.object({
   ASSETS_MAX_SIZE_MB: Joi.number().positive().default(10),
   ASSETS_BASE_URL: Joi.string().default('/api/v1/assets'),
   ASSETS_STATIC_DIR: Joi.string().default('./public'),
+
+  // ── Notification delivery providers (#388) ──────────────────
+
+  /** Comma-separated list of enabled notification providers (email, push, in-app). */
+  NOTIFICATION_PROVIDERS: csvList()
+    .items(Joi.string().valid('email', 'push', 'in-app'))
+    .default(['email', 'push', 'in-app']),
+
+  // ── Notification batching (#386) ────────────────────────────
+
+  /** Enable low-priority notification batching. */
+  NOTIFICATION_BATCH_ENABLED: Joi.string()
+    .valid('true', 'false')
+    .default('false'),
+
+  /** Max notifications per batch. */
+  NOTIFICATION_BATCH_MAX_SIZE: Joi.number().integer().positive().default(10),
+
+  /** Batch window in milliseconds before auto-flush. */
+  NOTIFICATION_BATCH_WINDOW_MS: Joi.number().integer().positive().default(30_000),
+
+  // ── Email provider (#387, #388) ─────────────────────────────
+
+  /** Default "from" address for outgoing email. */
+  EMAIL_FROM_ADDRESS: Joi.string().email().default('noreply@rustacademy.to'),
+
+  /** Default sender display name. */
+  EMAIL_FROM_NAME: Joi.string().default('RustAcademy'),
+
+  /** Default fallback name for missing personalization fields. */
+  EMAIL_FALLBACK_NAME: Joi.string().default('RustAcademy Learner'),
 });

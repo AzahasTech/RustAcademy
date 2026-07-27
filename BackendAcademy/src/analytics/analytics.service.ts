@@ -25,6 +25,10 @@ export enum EventType {
   SESSION_REVOKED = 'session_revoked',
   DEVICE_BOUND = 'device_bound',
   PRIVILEGE_CHANGED = 'privilege_changed',
+  /** Emitted when a batch of low-priority notifications is flushed */
+  NOTIFICATION_BATCH_FLUSHED = 'notification_batch_flushed',
+  /** Emitted when a single notification is delivered */
+  NOTIFICATION_DELIVERED = 'notification_delivered',
 }
 
 @Injectable()
@@ -188,5 +192,47 @@ export class AnalyticsService {
     this.events.push(...filtered);
 
     return initialLength - this.events.length;
+  }
+
+  // ── Notification batching analytics (#386) ────────────────
+
+  /**
+   * Tracks a notification batch flush event.
+   */
+  async trackBatchFlush(
+    batchId: string,
+    totalCount: number,
+    successCount: number,
+    failureCount: number,
+  ): Promise<void> {
+    await this.trackEvent({
+      eventType: EventType.NOTIFICATION_BATCH_FLUSHED,
+      properties: {
+        batchId,
+        totalCount,
+        successCount,
+        failureCount,
+      },
+    });
+  }
+
+  /**
+   * Tracks a single notification delivery event.
+   */
+  async trackNotificationDelivery(
+    notificationId: string,
+    userId: string,
+    providerId: string,
+    success: boolean,
+  ): Promise<void> {
+    await this.trackEvent({
+      eventType: EventType.NOTIFICATION_DELIVERED,
+      userId,
+      properties: {
+        notificationId,
+        providerId,
+        success,
+      },
+    });
   }
 }

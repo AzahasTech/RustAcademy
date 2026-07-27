@@ -19,6 +19,18 @@ export interface UserPrivilegeChangeEvent {
   timestamp: Date;
 }
 
+/**
+ * User profile data for email template personalization.
+ * Includes fallback-safe fields so templates never render blank content.
+ */
+export interface UserProfileFields {
+  userId: string;
+  name?: string;
+  email?: string;
+  displayName?: string;
+  avatarUrl?: string;
+}
+
 @Injectable()
 export class UsersService {
   private readonly logger = new Logger(UsersService.name);
@@ -81,6 +93,22 @@ export class UsersService {
   }
 
   /**
+   * Retrieves user profile fields for email template personalization.
+   *
+   * Returns safe defaults for any missing fields so email templates
+   * never render broken or blank content (#387).
+   */
+  async getUserProfileFields(userId: string): Promise<UserProfileFields> {
+    const prefs = this.preferencesByUser.get(userId);
+    return {
+      userId,
+      name: (prefs?.learnerPreferences?.['displayName'] as string) || undefined,
+      email: (prefs?.learnerPreferences?.['email'] as string) || undefined,
+      displayName:
+        (prefs?.learnerPreferences?.['displayName'] as string) || undefined,
+      avatarUrl:
+        (prefs?.learnerPreferences?.['avatarUrl'] as string) || undefined,
+    };
    * Records an asset upload against a user for ownership tracking.
    */
   recordAssetUpload(userId: string, assetId: string): void {
