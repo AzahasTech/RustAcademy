@@ -149,6 +149,27 @@ export class MetricsService implements OnModuleInit {
     }
   }
 
+  private reconciliationCount = 0;
+  private reconciliationDrifts = 0;
+
+  recordReconciliation(count: number, drifts: number): void {
+    this.reconciliationCount += count;
+    this.reconciliationDrifts += drifts;
+    this.setGauge('reconciliation_total', this.reconciliationCount);
+    this.setGauge('reconciliation_drifts', this.reconciliationDrifts);
+  private cacheWarmCount = 0;
+  private cacheWarmErrors = 0;
+
+  recordCacheWarm(count: number): void {
+    this.cacheWarmCount += count;
+    this.setGauge('cache_warm_total', this.cacheWarmCount);
+  }
+
+  recordCacheWarmError(): void {
+    this.cacheWarmErrors++;
+    this.setGauge('cache_warm_errors', this.cacheWarmErrors);
+  }
+
   /**
    * Marks a cron job as having errored.
    */
@@ -159,5 +180,53 @@ export class MetricsService implements OnModuleInit {
       entry.error = error;
     }
     this.incrementCounter('cron_errors_total', 1, { job: name });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Pagination Metrics — Issue #415
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Records a pagination request metric for monitoring feed ordering stability.
+   */
+  recordPaginationRequest(feed: string, cursorUsed: boolean, resultCount: number): void {
+    this.incrementCounter('pagination_requests_total', 1, {
+      feed,
+      cursor_used: String(cursorUsed),
+    });
+    this.setGauge(`pagination_result_count:${feed}`, resultCount, { feed });
+    if (resultCount === 0) {
+      this.incrementCounter('pagination_empty_results_total', 1, { feed });
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // API Key & Webhook Metrics — Issue #410, #412
+  // ---------------------------------------------------------------------------
+
+  recordApiKeyEvent(
+    event: 'created' | 'revoked' | 'rotated' | 'validated' | 'expired' | 'anomaly_detected',
+    labels: Record<string, string> = {},
+  ): void {
+    this.incrementCounter('api_key_events_total', 1, { event, ...labels });
+  }
+
+  recordWebhookDelivery(
+    status: 'success' | 'failed' | 'retry_scheduled',
+    attemptNumber: number,
+    labels: Record<string, string> = {},
+  ): void {
+    this.incrementCounter('webhook_deliveries_total', 1, {
+      status,
+      attempt: String(attemptNumber),
+      ...labels,
+    });
+    if (status === 'failed') {
+      this.incrementCounter('webhook_failures_total', 1, labels);
+    }
+  }
+
+  recordRequestTimeout(service: string, endpoint: string): void {
+    this.incrementCounter('request_timeouts_total', 1, { service, endpoint });
   }
 }

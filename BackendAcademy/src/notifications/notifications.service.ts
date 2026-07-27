@@ -1,12 +1,15 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Notification } from './interfaces/notifications.interface';
 import { CreateNotificationDto } from './dto/create-notification.dto';
 import { LocalizationService } from '../i18n/localization.service';
 
 @Injectable()
 export class NotificationsService {
+  private readonly logger = new Logger(NotificationsService.name);
   private notifications: Notification[] = [];
   private preferences: Map<string, NotificationPreferences> = new Map();
+  private readonly defaultTimeoutMs: number;
 
   // ── Default localized notification templates ────────────────
   static readonly TEMPLATES: Record<string, { titleKey: keyof import('../i18n/localization.service').LocalizationStrings; messageKey: keyof import('../i18n/localization.service').LocalizationStrings }> = {
@@ -37,10 +40,41 @@ export class NotificationsService {
     reviewResolved: {
       titleKey: 'notification.reviewResolved',
       messageKey: 'notification.reviewResolved',
+    reportTriaged: {
+      titleKey: 'notification.reportTriaged',
+      messageKey: 'notification.reportTriaged',
+    },
+    reportEscalated: {
+      titleKey: 'notification.reportEscalated',
+      messageKey: 'notification.reportEscalated',
+    },
+    reportResolved: {
+      titleKey: 'notification.reportResolved',
+      messageKey: 'notification.reportResolved',
+    contentFlagged: {
+      titleKey: 'notification.contentFlagged',
+      messageKey: 'notification.contentFlagged',
+    },
+    contentApproved: {
+      titleKey: 'notification.contentApproved',
+      messageKey: 'notification.contentApproved',
+    },
+    contentRejected: {
+      titleKey: 'notification.contentRejected',
+      messageKey: 'notification.contentRejected',
     },
   };
 
-  constructor(private readonly l10n: LocalizationService) {}
+  constructor(
+    private readonly l10n: LocalizationService,
+    private readonly configService?: ConfigService,
+  ) {
+    this.defaultTimeoutMs = this.configService?.get<number>('DEFAULT_REQUEST_TIMEOUT_MS') ?? 30_000;
+  }
+
+  createReportNotification(reportId: string, templateName: 'reportTriaged' | 'reportEscalated' | 'reportResolved'): Notification {
+    return this.createLocalized('system', templateName, 'in-app');
+  }
 
   create(createNotificationDto: CreateNotificationDto): Notification {
     const newNotification: Notification = {
@@ -78,6 +112,64 @@ export class NotificationsService {
       type,
       title: this.l10n.t(template.titleKey),
       message: this.l10n.t(template.messageKey),
+    });
+  }
+
+  /**
+   * Sends an outbound push notification with a global request timeout — Issue #408.
+   */
+  async sendWithTimeout(
+    url: string,
+    payload: unknown,
+    timeoutMs?: number,
+  ): Promise<{ success: boolean; error?: string }> {
+    const timeout = timeoutMs ?? this.defaultTimeoutMs;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        return { success: false, error: `HTTP ${response.status}` };
+      }
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      clearTimeout(timer);
+    }
+   * Notifies a user that a signed asset URL is about to expire.
+   */
+  notifySignedUrlExpiring(
+    userId: string,
+    assetId: string,
+    expiresAt: Date,
+  ): Notification {
+    return this.create({
+      userId,
+      type: 'in-app',
+      title: 'Signed URL Expiring Soon',
+      message: `Your access link for asset ${assetId} will expire at ${expiresAt.toISOString()}. Request a new one if you still need access.`,
+    });
+  }
+
+  /**
+   * Notifies a user that an asset URL scope was insufficient.
+   */
+  notifyInsufficientScope(
+    userId: string,
+    assetId: string,
+    requiredScope: string,
+  ): Notification {
+    return this.create({
+      userId,
+      type: 'in-app',
+      title: 'Insufficient Access Scope',
+      message: `Your access level for asset ${assetId} does not include "${requiredScope}" permissions.`,
     });
   }
 }
