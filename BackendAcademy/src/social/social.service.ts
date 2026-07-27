@@ -11,6 +11,8 @@ import {
 } from './interfaces/social-post.interface';
 import { Hashtag, HashtagListResponse } from './interfaces/hashtag.interface';
 
+export { ModerationStatus, SocialPost, SocialFeedResponse, FollowResponse } from './interfaces/social-post.interface';
+
 @Injectable()
 export class SocialService {
   private readonly posts = new Map<string, SocialPost>();
@@ -227,6 +229,31 @@ export class SocialService {
       followersCount: followers.size,
       followingCount: following.size,
     };
+  }
+
+  getFlaggedPosts(): SocialPost[] {
+    return Array.from(this.posts.values()).filter(
+      (post) => post.moderationStatus === 'flagged',
+    );
+  }
+
+  getModerationQueue(): SocialPost[] {
+    return Array.from(this.posts.values()).filter(
+      (post) => post.moderationStatus === 'pending' || post.moderationStatus === 'flagged',
+    );
+  }
+
+  bulkModerate(moderatorId: string, actions: Array<{ postId: string; status: ModerationStatus; reason?: string }>): number {
+    let count = 0;
+    for (const action of actions) {
+      try {
+        this.moderatePost(action.postId, moderatorId, { status: action.status, reason: action.reason });
+        count++;
+      } catch {
+        continue;
+      }
+    }
+    return count;
   }
 
   getPendingPosts(): SocialPost[] {
