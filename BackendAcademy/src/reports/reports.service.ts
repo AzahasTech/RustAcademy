@@ -3,6 +3,8 @@ import { AnalyticsEvent } from '../analytics/analytics.entity';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { RewardsService } from '../rewards/rewards.service';
 import { DatabaseService } from '../database/database.service';
+import { SubmissionsService, ReviewQueueMetrics } from '../submissions/submissions.service';/rewards.service';
+import { DatabaseService } from '../database/database.service';
 import { WalletService } from '../wallet/wallet.service';
 
 export interface DailyActivitySummary {
@@ -98,6 +100,7 @@ export class ReportsService {
   constructor(
     private readonly analyticsService: AnalyticsService,
     private readonly rewardsService: RewardsService,
+    private readonly submissionsService: SubmissionsService,
     private readonly databaseService?: DatabaseService,
     private readonly walletService?: WalletService,
   ) {}
@@ -177,6 +180,32 @@ export class ReportsService {
       expiredCoupons: coupons.filter((c) => c.expiresAt && c.expiresAt <= now).length,
       redemptionsByCoupon,
     };
+  }
+
+  async getReviewQueueReport(): Promise<{
+    metrics: ReviewQueueMetrics;
+    flagsByReason: Record<string, number>;
+    averageResolutionTimeMs: number;
+  }> {
+    const metrics = this.submissionsService.getQueueMetrics();
+    const allFlags = this.submissionsService.getFlaggedSubmissions();
+
+    const flagsByReason: Record<string, number> = {};
+    for (const flag of allFlags) {
+      flagsByReason[flag.flagReason] = (flagsByReason[flag.flagReason] || 0) + 1;
+    }
+
+    const resolvedFlags = allFlags.filter(
+      (f) => f.resolvedAt && f.createdAt,
+    );
+    const totalResolutionTime = resolvedFlags.reduce((sum, f) => {
+      return sum + (f.resolvedAt!.getTime() - f.createdAt.getTime());
+    }, 0);
+    const averageResolutionTimeMs = resolvedFlags.length > 0
+      ? Math.round(totalResolutionTime / resolvedFlags.length)
+      : 0;
+
+    return { metrics, flagsByReason, averageResolutionTimeMs };
   }
 
   private readonly reports = new Map<string, ReportTriageEntry>();

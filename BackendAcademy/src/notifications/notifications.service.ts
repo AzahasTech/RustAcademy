@@ -29,6 +29,17 @@ export class NotificationsService {
       titleKey: 'notification.courseCompleted',
       messageKey: 'notification.courseCompleted',
     },
+    submissionFlagged: {
+      titleKey: 'notification.submissionFlagged',
+      messageKey: 'notification.submissionFlagged',
+    },
+    reviewAssigned: {
+      titleKey: 'notification.reviewAssigned',
+      messageKey: 'notification.reviewAssigned',
+    },
+    reviewResolved: {
+      titleKey: 'notification.reviewResolved',
+      messageKey: 'notification.reviewResolved',
     reportTriaged: {
       titleKey: 'notification.reportTriaged',
       messageKey: 'notification.reportTriaged',
