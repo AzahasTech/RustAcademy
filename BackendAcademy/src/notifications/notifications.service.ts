@@ -37,6 +37,17 @@ export class NotificationsService {
     reportResolved: {
       titleKey: 'notification.reportResolved',
       messageKey: 'notification.reportResolved',
+    contentFlagged: {
+      titleKey: 'notification.contentFlagged',
+      messageKey: 'notification.contentFlagged',
+    },
+    contentApproved: {
+      titleKey: 'notification.contentApproved',
+      messageKey: 'notification.contentApproved',
+    },
+    contentRejected: {
+      titleKey: 'notification.contentRejected',
+      messageKey: 'notification.contentRejected',
     },
   };
 

@@ -149,6 +149,27 @@ export class MetricsService implements OnModuleInit {
     }
   }
 
+  private reconciliationCount = 0;
+  private reconciliationDrifts = 0;
+
+  recordReconciliation(count: number, drifts: number): void {
+    this.reconciliationCount += count;
+    this.reconciliationDrifts += drifts;
+    this.setGauge('reconciliation_total', this.reconciliationCount);
+    this.setGauge('reconciliation_drifts', this.reconciliationDrifts);
+  private cacheWarmCount = 0;
+  private cacheWarmErrors = 0;
+
+  recordCacheWarm(count: number): void {
+    this.cacheWarmCount += count;
+    this.setGauge('cache_warm_total', this.cacheWarmCount);
+  }
+
+  recordCacheWarmError(): void {
+    this.cacheWarmErrors++;
+    this.setGauge('cache_warm_errors', this.cacheWarmErrors);
+  }
+
   /**
    * Marks a cron job as having errored.
    */
