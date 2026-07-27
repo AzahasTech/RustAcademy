@@ -19,6 +19,20 @@ export const envValidationSchema = Joi.object({
   CRON_CLEANUP_SCHEDULE: Joi.string().default('0 0 * * *'),
   CRON_ANALYTICS_SCHEDULE: Joi.string().default('0 */6 * * *'),
   CRON_NOTIFICATIONS_SCHEDULE: Joi.string().default('*/30 * * * *'),
+  ERROR_LOG_LEVEL: Joi.string().valid('error', 'warn', 'info', 'debug').default('error'),
+  ERROR_METRICS_ENABLED: Joi.boolean().default(true),
+  ERROR_CODES_FILE_PATH: Joi.string().optional(),
+  RATE_LIMIT_WINDOW_MS: Joi.number().default(60000),
+  RATE_LIMIT_MAX: Joi.number().default(100),
+});
+
+export interface ErrorConfig {
+  ERROR_LOG_LEVEL: string;
+  ERROR_METRICS_ENABLED: boolean;
+  ERROR_CODES_FILE_PATH?: string;
+  RATE_LIMIT_WINDOW_MS: number;
+  RATE_LIMIT_MAX: number;
+}
   ANALYTICS_BATCH_SIZE: Joi.number().default(100),
   ANALYTICS_MAX_PAYLOAD_SIZE: Joi.number().default(1048576),
   ANALYTICS_RATE_LIMIT_WINDOW_MS: Joi.number().default(60000),
