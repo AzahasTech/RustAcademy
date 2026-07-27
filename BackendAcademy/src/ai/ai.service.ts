@@ -29,6 +29,7 @@ export class AiService {
   private chatHistory: Map<string, ChatMessage[]> = new Map();
   private chatRecords: Map<string, AiChatRecord> = new Map();
   private hints: Map<string, Hint[]> = new Map();
+  private readonly defaultTimeoutMs: number;
 
   constructor(
     @Optional() @Inject(AI_PROVIDER) private aiProvider?: AiProvider,
@@ -37,6 +38,7 @@ export class AiService {
     private readonly redisService?: RedisService,
     private readonly monitoringService?: MonitoringService,
   ) {
+    this.defaultTimeoutMs = this.configService?.get<number>('DEFAULT_REQUEST_TIMEOUT_MS') ?? 30_000;
     this.initializeSampleHints();
   }
 
@@ -291,5 +293,19 @@ export class AiService {
     ];
 
     this.hints.set('sample-challenge-001', sampleHints);
+  }
+
+  /**
+   * Executes an outbound AI provider call with a global request timeout — Issue #408.
+   */
+  async fetchWithTimeout(url: string, init?: RequestInit, timeoutMs?: number): Promise<Response> {
+    const timeout = timeoutMs ?? this.defaultTimeoutMs;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    try {
+      return await fetch(url, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }

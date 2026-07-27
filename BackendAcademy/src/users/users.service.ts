@@ -36,6 +36,8 @@ export class UsersService {
   private readonly logger = new Logger(UsersService.name);
   private readonly preferencesByUser = new Map<string, UserPreferencesResponse>();
   private readonly privilegeChangeLog: UserPrivilegeChangeEvent[] = [];
+  /** Tracks (userId → assetIds) for upload deduplication awareness. */
+  private readonly userUploads = new Map<string, Set<string>>();
 
   async updatePreferences(
     userId: string,
@@ -107,5 +109,19 @@ export class UsersService {
       avatarUrl:
         (prefs?.learnerPreferences?.['avatarUrl'] as string) || undefined,
     };
+   * Records an asset upload against a user for ownership tracking.
+   */
+  recordAssetUpload(userId: string, assetId: string): void {
+    if (!this.userUploads.has(userId)) {
+      this.userUploads.set(userId, new Set());
+    }
+    this.userUploads.get(userId)!.add(assetId);
+  }
+
+  /**
+   * Returns all asset IDs uploaded by a user.
+   */
+  getUserUploads(userId: string): string[] {
+    return Array.from(this.userUploads.get(userId) ?? []);
   }
 }
