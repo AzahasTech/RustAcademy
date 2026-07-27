@@ -254,6 +254,27 @@ export class CourseService {
     return savedRevision;
   }
 
+  private popularCourseIds: string[] = [];
+
+  setPopularCourseIds(ids: string[]): void {
+    this.popularCourseIds = ids;
+  }
+
+  getPopularCourseIds(): string[] {
+    return this.popularCourseIds;
+  }
+
+  async getCacheWarmKeys(): Promise<string[]> {
+    const ids = this.popularCourseIds.length > 0
+      ? this.popularCourseIds
+      : (await this.findAll()).map((c) => c.id).slice(0, 20);
+    const keys: string[] = [];
+    for (const id of ids) {
+      keys.push(`course:${id}`);
+    }
+    return keys;
+  }
+
   async completeCourse(id: string, userId: string) {
     const course = await this.courseRepo.findOne({ where: { id } });
     if (!course) {

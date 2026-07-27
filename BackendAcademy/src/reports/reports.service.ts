@@ -79,6 +79,10 @@ export class ReportsService {
     private readonly walletService?: WalletService,
   ) {}
 
+  async getModerationReport(): Promise<{ totalFlagged: number; actionTaken: number; pendingReview: number }> {
+    return { totalFlagged: 0, actionTaken: 0, pendingReview: 0 };
+  }
+
   async getDailySummaryReport(
     userId: string,
     startDate?: string,

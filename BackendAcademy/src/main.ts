@@ -2,6 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { ValidationPipe, Logger, VersioningType } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import helmet from 'helmet';
 import * as fs from 'node:fs';
@@ -10,11 +11,15 @@ import * as path from 'node:path';
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const logger = new Logger('Bootstrap');
+  // Read env through ConfigService so values are validated and coerced by
+  // the Joi schema (lists, numbers, …) identically in every deployment.
+  const config = app.get(ConfigService);
 
   app.use(helmet());
 
   app.enableCors({
-    origin: process.env.CORS_ORIGIN || '*',
+    // Either '*' or an array of origins, already parsed by the env schema.
+    origin: config.get<string | string[]>('CORS_ORIGIN', '*'),
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
     credentials: true,
   });
@@ -47,7 +52,7 @@ async function bootstrap() {
   // created on demand if missing so the backend can boot in a fresh
   // clone without crashing.
   const staticDir = path.resolve(
-    process.env.ASSETS_STATIC_DIR ?? './public',
+    config.get<string>('ASSETS_STATIC_DIR', './public'),
   );
   try {
     fs.mkdirSync(staticDir, { recursive: true });
@@ -61,7 +66,7 @@ async function bootstrap() {
     );
   }
 
-  const port = process.env.PORT || 3000;
+  const port = config.get<number>('PORT', 3000);
   await app.listen(port);
   logger.log(`Backend running on http://localhost:${port}`);
 }

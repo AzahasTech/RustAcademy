@@ -50,6 +50,7 @@ export class JobsService implements OnModuleInit {
       { name: 'analytics', key: 'CRON_ANALYTICS_SCHEDULE' },
       { name: 'notifications', key: 'CRON_NOTIFICATIONS_SCHEDULE' },
       { name: 'walletReconciliation', key: 'CRON_WALLET_RECONCILIATION_SCHEDULE' },
+      { name: 'cacheWarming', key: 'CRON_CACHE_WARMING_SCHEDULE' },
     ];
 
     for (const entry of entries) {

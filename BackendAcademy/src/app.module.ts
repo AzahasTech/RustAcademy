@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
+import { ConfigService } from '@nestjs/config';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AppController } from './app.controller';
 import { ApiInfoController } from './api-info.controller';
@@ -37,13 +38,18 @@ import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
   imports: [
-    ThrottlerModule.forRoot([
-      {
-        limit: 10,
-        ttl: 60_000,
-      },
-    ]),
     AppConfigModule,
+    ThrottlerModule.forRootAsync({
+      inject: [ConfigService],
+      // Values come from the validated env schema so local and container
+      // deployments always agree on types and defaults.
+      useFactory: (config: ConfigService) => [
+        {
+          limit: config.get<number>('THROTTLE_LIMIT', 10),
+          ttl: config.get<number>('THROTTLE_TTL_MS', 60_000),
+        },
+      ],
+    }),
     AuthModule,
     ContractsModule,
     UserProfileModule,
@@ -53,7 +59,6 @@ import { NotificationsModule } from './notifications/notifications.module';
     SecurityModule,
     ChallengesModule,
     AiModule,
-    ContractsModule,
     LeaderboardModule,
     AnalyticsModule,
     WalletModule,
