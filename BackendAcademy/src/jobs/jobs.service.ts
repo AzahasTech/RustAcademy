@@ -224,8 +224,6 @@ export class JobsService implements OnModuleInit {
   }
 
   private computeNextRuns(_expression: string, count: number): string[] {
-    // Note: next-run times are approximated. Install the 'cron-parser' npm package
-    // for accurate cron-based scheduling: npm install cron-parser
     const runs: string[] = [];
     const now = new Date();
     for (let i = 1; i <= count; i++) {
@@ -233,5 +231,64 @@ export class JobsService implements OnModuleInit {
       runs.push(next.toISOString());
     }
     return runs;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Webhook Retry Scheduling — Issue #412
+  // ---------------------------------------------------------------------------
+
+  /** Queue of pending webhook retries, keyed by webhookId. */
+  private readonly pendingWebhookRetries = new Map<string, {
+    webhookId: string;
+    attempt: number;
+    nextRetryAt: Date;
+    lastError?: string;
+  }>();
+
+  /**
+   * Schedules a webhook retry with exponential backoff and jitter.
+   */
+  scheduleWebhookRetry(
+    webhookId: string,
+    attempt: number,
+    baseBackoffMs: number,
+    maxBackoffMs: number,
+  ): Date {
+    const exponential = Math.min(baseBackoffMs * Math.pow(2, attempt - 1), maxBackoffMs);
+    const jitter = exponential * (0.5 + Math.random() * 0.5);
+    const nextRetryAt = new Date(Date.now() + Math.floor(jitter));
+
+    this.pendingWebhookRetries.set(webhookId, {
+      webhookId,
+      attempt,
+      nextRetryAt,
+    });
+
+    this.logger.log(
+      `Scheduled webhook retry for ${webhookId} attempt ${attempt} at ${nextRetryAt.toISOString()}`,
+    );
+    return nextRetryAt;
+  }
+
+  /**
+   * Returns all webhook retries that are due for execution.
+   */
+  getDueWebhookRetries(): Array<{ webhookId: string; attempt: number }> {
+    const now = new Date();
+    const due: Array<{ webhookId: string; attempt: number }> = [];
+    for (const [id, entry] of this.pendingWebhookRetries) {
+      if (entry.nextRetryAt <= now) {
+        due.push({ webhookId: id, attempt: entry.attempt });
+        this.pendingWebhookRetries.delete(id);
+      }
+    }
+    return due;
+  }
+
+  /**
+   * Removes a scheduled retry (e.g. on successful delivery).
+   */
+  cancelWebhookRetry(webhookId: string): boolean {
+    return this.pendingWebhookRetries.delete(webhookId);
   }
 }

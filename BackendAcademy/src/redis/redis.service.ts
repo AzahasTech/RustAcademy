@@ -122,4 +122,53 @@ export class RedisService {
     const regex = new RegExp(pattern.replace('*', '.*'));
     return Array.from(this.cache.keys()).filter((k) => regex.test(k));
   }
+
+  // ---------------------------------------------------------------------------
+  // Webhook Idempotency — Issue #411
+  // ---------------------------------------------------------------------------
+
+  private readonly webhookIdempotency = new Map<string, number>();
+
+  /**
+   * Returns true if this idempotency key was already seen within the TTL window.
+   */
+  async isWebhookIdempotent(idempotencyKey: string, ttlMs = 3_600_000): Promise<boolean> {
+    const now = Date.now();
+    const firstSeen = this.webhookIdempotency.get(idempotencyKey);
+    if (firstSeen && now - firstSeen < ttlMs) {
+      return true;
+    }
+    this.webhookIdempotency.set(idempotencyKey, now);
+    return false;
+  }
+
+  /**
+   * Records a webhook delivery attempt for tracking.
+   */
+  private readonly webhookDeliveryLog = new Map<string, Array<{
+    attempt: number;
+    timestamp: Date;
+    status: string;
+    statusCode?: number;
+  }>>();
+
+  async recordWebhookDelivery(
+    webhookId: string,
+    attempt: number,
+    status: string,
+    statusCode?: number,
+  ): Promise<void> {
+    const log = this.webhookDeliveryLog.get(webhookId) || [];
+    log.push({ attempt, timestamp: new Date(), status, statusCode });
+    this.webhookDeliveryLog.set(webhookId, log);
+  }
+
+  async getWebhookDeliveryLog(webhookId: string): Promise<Array<{
+    attempt: number;
+    timestamp: Date;
+    status: string;
+    statusCode?: number;
+  }>> {
+    return this.webhookDeliveryLog.get(webhookId) || [];
+  }
 }
