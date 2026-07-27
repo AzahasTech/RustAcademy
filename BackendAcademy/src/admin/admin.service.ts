@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { ReportsService, ReportStatus, ReportTriageEntry } from '../reports/reports.service';
 import { SocialService, SocialPost, ModerationStatus } from '../social/social.service';
 
 export interface AdminDashboardSummary {
@@ -16,6 +17,7 @@ export interface ModerationQueueSummary {
 
 @Injectable()
 export class AdminService {
+  constructor(private readonly reportsService: ReportsService) {}
   constructor(private readonly socialService: SocialService) {}
 
   async getDashboardSummary(): Promise<AdminDashboardSummary> {
@@ -27,6 +29,30 @@ export class AdminService {
     };
   }
 
+  getPendingReports(): ReportTriageEntry[] {
+    return this.reportsService.getAllReports('submitted');
+  }
+
+  getReportsInTriage(): ReportTriageEntry[] {
+    return this.reportsService.getAllReports('triage');
+  }
+
+  assignReport(reportId: string, adminId: string): ReportTriageEntry {
+    const report = this.reportsService.transitionReportStatus(reportId, adminId, 'triage', `Assigned to ${adminId}`);
+    report.assignedTo = adminId;
+    return report;
+  }
+
+  escalateReport(reportId: string, adminId: string, note: string): ReportTriageEntry {
+    return this.reportsService.transitionReportStatus(reportId, adminId, 'escalated', note);
+  }
+
+  resolveReport(reportId: string, adminId: string, note: string): ReportTriageEntry {
+    return this.reportsService.transitionReportStatus(reportId, adminId, 'resolved', note);
+  }
+
+  dismissReport(reportId: string, adminId: string, note: string): ReportTriageEntry {
+    return this.reportsService.transitionReportStatus(reportId, adminId, 'dismissed', note);
   getModerationQueueSummary(): ModerationQueueSummary {
     const queue = this.socialService.getModerationQueue();
     const pending = queue.filter((p) => p.moderationStatus === 'pending').length;

@@ -26,6 +26,17 @@ export class NotificationsService {
       titleKey: 'notification.courseCompleted',
       messageKey: 'notification.courseCompleted',
     },
+    reportTriaged: {
+      titleKey: 'notification.reportTriaged',
+      messageKey: 'notification.reportTriaged',
+    },
+    reportEscalated: {
+      titleKey: 'notification.reportEscalated',
+      messageKey: 'notification.reportEscalated',
+    },
+    reportResolved: {
+      titleKey: 'notification.reportResolved',
+      messageKey: 'notification.reportResolved',
     contentFlagged: {
       titleKey: 'notification.contentFlagged',
       messageKey: 'notification.contentFlagged',
@@ -41,6 +52,10 @@ export class NotificationsService {
   };
 
   constructor(private readonly l10n: LocalizationService) {}
+
+  createReportNotification(reportId: string, templateName: 'reportTriaged' | 'reportEscalated' | 'reportResolved'): Notification {
+    return this.createLocalized('system', templateName, 'in-app');
+  }
 
   create(createNotificationDto: CreateNotificationDto): Notification {
     const newNotification: Notification = {
