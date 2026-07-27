@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ErrorCode } from '../common/error-codes.constants';
 
 interface MetricEntry {
   name: string;
@@ -24,6 +25,7 @@ export class MetricsService implements OnModuleInit {
   private readonly metrics = new Map<string, MetricEntry>();
   private readonly cronHealth = new Map<string, CronHealthStatus>();
   private readonly requestCounts = new Map<string, number>();
+  private readonly errorCounts = new Map<string, number>();
 
   constructor(private readonly configService: ConfigService) {}
 
@@ -159,5 +161,42 @@ export class MetricsService implements OnModuleInit {
       entry.error = error;
     }
     this.incrementCounter('cron_errors_total', 1, { job: name });
+  }
+
+  /**
+   * Records an error by its structured error code.
+   */
+  recordErrorByCode(errorCode: ErrorCode, endpoint?: string): void {
+    const count = this.errorCounts.get(errorCode) || 0;
+    this.errorCounts.set(errorCode, count + 1);
+    this.incrementCounter('errors_total', 1, {
+      error_code: errorCode,
+      ...(endpoint ? { endpoint } : {}),
+    });
+    this.logger.debug(`Error "${errorCode}" recorded (total: ${count + 1})`);
+  }
+
+  /**
+   * Returns error counts grouped by error code.
+   */
+  getErrorCounts(): Array<{ errorCode: string; count: number }> {
+    return Array.from(this.errorCounts.entries()).map(([errorCode, count]) => ({
+      errorCode,
+      count,
+    }));
+  }
+
+  /**
+   * Returns error count for a specific error code.
+   */
+  getErrorCountByCode(errorCode: string): number {
+    return this.errorCounts.get(errorCode) || 0;
+  }
+
+  /**
+   * Clears all error counts.
+   */
+  clearErrorCounts(): void {
+    this.errorCounts.clear();
   }
 }
