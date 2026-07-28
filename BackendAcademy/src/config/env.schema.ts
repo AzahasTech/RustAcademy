@@ -1,6 +1,32 @@
 import * as Joi from 'joi';
 
 /**
+ * Base environment variable schema for core application configuration.
+ */
+export const baseEnvSchema = Joi.object({
+  NODE_ENV: Joi.string().valid('development', 'production', 'test').default('development'),
+  PORT: Joi.number().default(3000),
+  CORS_ORIGIN: Joi.string().optional(),
+  DATABASE_URL: Joi.string().optional(),
+  REDIS_HOST: Joi.string().default('localhost'),
+  REDIS_PORT: Joi.number().default(6379),
+  JWT_SECRET: Joi.string().optional(),
+  AI_PROVIDER: Joi.string().valid('claude', 'openai', 'mock').default('mock'),
+  ANTHROPIC_API_KEY: Joi.string().optional(),
+  OPENAI_API_KEY: Joi.string().optional(),
+  AI_MODEL: Joi.string().optional(),
+  AI_MAX_TOKENS: Joi.number().default(4096),
+  AI_TEMPERATURE: Joi.number().default(0.7),
+  LOCALE: Joi.string().default('en'),
+
+  // ── Cron schedules ──────────────────────────────────────────
+  CRON_CLEANUP_SCHEDULE: Joi.string().default('0 0 * * *'),
+  CRON_ANALYTICS_SCHEDULE: Joi.string().default('0 */6 * * *'),
+  CRON_NOTIFICATIONS_SCHEDULE: Joi.string().default('*/30 * * * *'),
+  CRON_CONTRACT_REPLAY_SCHEDULE: Joi.string().optional(),
+});
+
+/**
  * Environment variable schema that enforces explicit feature flags
  * for contract ingestion and processing. Contract processing modules
  * MUST NOT activate unless their corresponding feature flags are
@@ -156,3 +182,70 @@ export function isFeatureEnabled(value: string | undefined): boolean {
 export function isFeatureExplicitlyDisabled(value: string | undefined): boolean {
   return value === 'false';
 }
+
+/**
+ * Environment variables for notification delivery and preferences.
+ */
+export const notificationEnvSchema = Joi.object({
+  /** When "true", user notification preferences are enforced before delivery */
+  NOTIFICATION_ENFORCE_PREFERENCES: Joi.string()
+    .valid('true', 'false')
+    .default('true')
+    .description(
+      'When "true", notification delivery checks user preferences first. ' +
+        'Set to "false" to bypass preference checks (e.g. for critical system alerts).',
+    ),
+
+  /** Default notification channel preference when no user preference exists */
+  NOTIFICATION_DEFAULT_CHANNEL: Joi.string()
+    .valid('email', 'push', 'in-app', 'all')
+    .default('all')
+    .description('Default notification channel for users without explicit preferences.'),
+});
+
+/**
+ * Environment variables for migration safety and ordering.
+ */
+export const migrationEnvSchema = Joi.object({
+  /** Timeout in milliseconds for acquiring a migration lock */
+  MIGRATION_LOCK_TIMEOUT: Joi.number()
+    .integer()
+    .min(1000)
+    .default(300_000)
+    .description('Timeout in ms for acquiring a migration lock (default 5 min).'),
+
+  /** Maximum number of retry attempts for failed migrations */
+  MIGRATION_RETRY_ATTEMPTS: Joi.number()
+    .integer()
+    .min(0)
+    .max(10)
+    .default(3)
+    .description('Maximum retry attempts for failed migrations.'),
+
+  /** When true, strict ordering is enforced and migrations out of order are rejected */
+  MIGRATION_STRICT_ORDERING: Joi.string()
+    .valid('true', 'false')
+    .default('true')
+    .description(
+      'When "true", migrations must be applied strictly in dependency order. ' +
+        'Any ordering violation blocks migration execution.',
+    ),
+
+  /** When true, a preflight check is required before any migration can run */
+  MIGRATION_REQUIRE_PREFLIGHT: Joi.string()
+    .valid('true', 'false')
+    .default('true')
+    .description(
+      'When "true", preflight validation must pass before migrations execute.',
+    ),
+});
+
+/**
+ * Combined validation schema that includes base, contract, migration,
+ * and notification environment variables.
+ * Used by config.module.ts to validate all env vars at startup.
+ */
+export const validationSchema = baseEnvSchema
+  .concat(contractEnvSchema)
+  .concat(migrationEnvSchema)
+  .concat(notificationEnvSchema);
