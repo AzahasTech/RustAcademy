@@ -143,6 +143,19 @@ export class AnalyticsService {
     );
   }
 
+  /**
+   * #354: Removes all analytics events for a given user.
+   */
+  async removeEventsByUserId(userId: string): Promise<number> {
+    const before = this.events.length;
+    this.events.splice(
+      0,
+      this.events.length,
+      ...this.events.filter((e) => e.userId !== userId),
+    );
+    return before - this.events.length;
+  }
+
   async getEventStatistics(): Promise<{
     totalEvents: number;
     eventsByType: Record<string, number>;
