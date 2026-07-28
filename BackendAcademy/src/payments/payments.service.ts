@@ -16,6 +16,47 @@ import { IContractAdapter } from '../contracts';
  * not available (e.g., test environments), the service operates
  * in off-chain-only mode.
  */
+import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { DatabaseService, PaymentStatus } from '../database/database.service';
+import { TransactionHistoryQueryDto } from './dto/transaction-history-query.dto';
+import { StellarTransaction, TransactionHistoryResponse } from './interfaces/transaction.interface';
+
+export interface WebhookPayload {
+  id: string;
+  url: string;
+  body: string;
+  signature: string;
+  idempotencyKey: string;
+  maxRetries: number;
+}
+
+/**
+ * Shape of the JSON body sent by the payment provider for a payment status
+ * callback. `eventId` is the provider's identifier for *this specific*
+ * event delivery — it is expected to differ across retries in some
+ * provider implementations, which is exactly why state validation cannot
+ * rely on idempotency-key replay detection alone (see
+ * DatabaseService.updatePaymentStatus) — Issue #412 follow-up.
+ */
+export interface PaymentWebhookEvent {
+  eventId: string;
+  paymentId: string;
+  orderId: string;
+  userId: string;
+  status: PaymentStatus;
+  amount: number;
+  assetCode: string;
+  provider: string;
+  couponCode?: string;
+}
+
+export type WebhookProcessingOutcome =
+  | { outcome: 'applied'; paymentId: string; status: PaymentStatus }
+  | { outcome: 'duplicate'; paymentId: string; reason: string }
+  | { outcome: 'noop'; paymentId: string; reason: string }
+  | { outcome: 'rejected'; paymentId: string; reason: string };
+
 @Injectable()
 export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
@@ -79,6 +120,77 @@ export class PaymentsService {
     @Optional()
     private readonly contractAdapter?: IContractAdapter,
   ) {}
+    private readonly configService?: ConfigService,
+  ) {
+    this.defaultTimeoutMs = this.configService?.get<number>('DEFAULT_REQUEST_TIMEOUT_MS') ?? 30_000;
+    this.webhookMaxRetries = this.configService?.get<number>('WEBHOOK_MAX_RETRIES') ?? 5;
+    this.webhookBaseBackoffMs = this.configService?.get<number>('WEBHOOK_BASE_BACKOFF_MS') ?? 1_000;
+    this.webhookMaxBackoffMs = this.configService?.get<number>('WEBHOOK_MAX_BACKOFF_MS') ?? 60_000;
+  }
+
+  /**
+   * Executes a fetch with a global timeout policy.
+   */
+  async fetchWithTimeout(url: string, init?: RequestInit, timeoutMs?: number): Promise<Response> {
+    const timeout = timeoutMs ?? this.defaultTimeoutMs;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    try {
+      return await fetch(url, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Delivers a webhook with exponential backoff, jitter, and retry — Issue #412.
+   */
+  async deliverWebhookWithRetry(
+    webhook: WebhookPayload,
+    deliverFn: (url: string, body: string, headers: Record<string, string>) => Promise<number>,
+  ): Promise<{ success: boolean; attempts: number; lastError?: string }> {
+    let lastError: string | undefined;
+    for (let attempt = 1; attempt <= webhook.maxRetries; attempt++) {
+      try {
+        const statusCode = await deliverFn(webhook.url, webhook.body, {
+          'X-Webhook-Signature': webhook.signature,
+          'X-Idempotency-Key': webhook.idempotencyKey,
+          'X-Webhook-Attempt': String(attempt),
+        });
+        if (statusCode >= 200 && statusCode < 300) {
+          this.logger.log(`Webhook ${webhook.id} delivered on attempt ${attempt}`);
+          return { success: true, attempts: attempt };
+        }
+        lastError = `HTTP ${statusCode}`;
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+      }
+
+      if (attempt < webhook.maxRetries) {
+        const delay = this.calculateRetryDelay(attempt);
+        this.logger.warn(
+          `Webhook ${webhook.id} attempt ${attempt} failed (${lastError}), retrying in ${delay}ms`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+    this.logger.error(
+      `Webhook ${webhook.id} failed after ${webhook.maxRetries} attempts: ${lastError}`,
+    );
+    return { success: false, attempts: webhook.maxRetries, lastError };
+  }
+
+  /**
+   * Calculates retry delay with exponential backoff and jitter — Issue #412.
+   */
+  calculateRetryDelay(attemptNumber: number): number {
+    const exponential = Math.min(
+      this.webhookBaseBackoffMs * Math.pow(2, attemptNumber - 1),
+      this.webhookMaxBackoffMs,
+    );
+    const jitter = exponential * (0.5 + Math.random() * 0.5);
+    return Math.floor(jitter);
+  }
 
   getTransactionHistory(query: TransactionHistoryQueryDto): TransactionHistoryResponse {
     const { account, limit, cursor } = query;
@@ -140,5 +252,96 @@ export class PaymentsService {
 
   async getAllCoupons() {
     return this.databaseService.getAllCoupons();
+  }
+
+  /**
+   * Processes a validated, signature-checked payment webhook event.
+   *
+   * Issue #412 follow-up: this is the single choke point where a provider
+   * callback is allowed to mutate payment state. It never applies the
+   * caller's claimed status directly — it always defers to
+   * DatabaseService.updatePaymentStatus, which re-checks the payment's
+   * *current* stored status against the legal-transition graph. Duplicate
+   * callbacks (same event id, or a callback that would just repeat the
+   * current status) are recognized and short-circuited before any side
+   * effect (like granting a coupon redemption) runs, and illegal
+   * transitions (e.g. `succeeded` -> `pending`, or mutating a payment that
+   * already resolved to `failed`/`refunded`) are rejected outright.
+   */
+  async processPaymentWebhookEvent(event: PaymentWebhookEvent): Promise<WebhookProcessingOutcome> {
+    // Ensure the payment row exists (first callback for a payment creates it
+    // in `pending`; this is a no-op for payments we already know about).
+    const existing = await this.databaseService.getPaymentById(event.paymentId);
+    if (!existing) {
+      await this.databaseService.createPayment({
+        id: event.paymentId,
+        orderId: event.orderId,
+        userId: event.userId,
+        status: 'pending',
+        amount: event.amount,
+        assetCode: event.assetCode,
+        provider: event.provider,
+      });
+    }
+
+    const result = await this.databaseService.updatePaymentStatus(
+      event.paymentId,
+      event.status,
+      event.eventId,
+    );
+
+    if (!result.success) {
+      this.logger.warn(
+        `Rejected webhook event ${event.eventId} for payment ${event.paymentId}: ${result.reason}`,
+      );
+      return {
+        outcome: 'rejected',
+        paymentId: event.paymentId,
+        reason: result.reason ?? 'invalid transition',
+      };
+    }
+
+    if (result.duplicateEvent) {
+      this.logger.log(
+        `Ignoring duplicate webhook event ${event.eventId} for payment ${event.paymentId}`,
+      );
+      return {
+        outcome: 'duplicate',
+        paymentId: event.paymentId,
+        reason: result.reason ?? 'duplicate event',
+      };
+    }
+
+    if (!result.transitioned) {
+      // Legal but a no-op (payment already in the requested status under a
+      // different event id) — do not re-run side effects.
+      return {
+        outcome: 'noop',
+        paymentId: event.paymentId,
+        reason: result.reason ?? 'no state change',
+      };
+    }
+
+    // Only a genuine, first-time transition into `succeeded` grants a
+    // coupon redemption, so a duplicated success callback can never apply
+    // the discount twice.
+    if (event.status === 'succeeded' && event.couponCode) {
+      const applied = await this.applyCoupon(
+        event.couponCode,
+        event.userId,
+        event.amount,
+        event.orderId,
+      );
+      if (!applied.success) {
+        this.logger.warn(
+          `Payment ${event.paymentId} succeeded but coupon ${event.couponCode} could not be applied: ${applied.reason}`,
+        );
+      }
+    }
+
+    this.logger.log(
+      `Applied webhook event ${event.eventId}: payment ${event.paymentId} -> ${event.status}`,
+    );
+    return { outcome: 'applied', paymentId: event.paymentId, status: event.status };
   }
 }
