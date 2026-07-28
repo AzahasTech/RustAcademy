@@ -12,6 +12,9 @@ import { validationSchema } from './env.schema';
     NestConfigModule.forRoot({
       isGlobal: true,
       validationSchema,
+      cache: true,
+      envFilePath: ['.env.local', '.env'],
+      expandVariables: true,
       validationOptions: {
         // Report every invalid variable at once and coerce string env
         // values to their declared types (numbers, booleans, lists, JSON).

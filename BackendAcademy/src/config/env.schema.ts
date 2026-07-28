@@ -184,6 +184,9 @@ export function isFeatureExplicitlyDisabled(value: string | undefined): boolean 
 }
 
 /**
+ * Environment variables for notification delivery and preferences (#385).
+ */
+export const notificationEnvSchema = Joi.object({
  * Environment variables for notification delivery and preferences.
  */
 export const notificationEnvSchema = Joi.object({
@@ -193,10 +196,8 @@ export const notificationEnvSchema = Joi.object({
     .default('true')
     .description(
       'When "true", notification delivery checks user preferences first. ' +
-        'Set to "false" to bypass preference checks (e.g. for critical system alerts).',
+        'Set to "false" to bypass preference checks for critical system alerts.',
     ),
-
-  /** Default notification channel preference when no user preference exists */
   NOTIFICATION_DEFAULT_CHANNEL: Joi.string()
     .valid('email', 'push', 'in-app', 'all')
     .default('all')
@@ -204,6 +205,11 @@ export const notificationEnvSchema = Joi.object({
 });
 
 /**
+ * Combined validation schema that includes contract and notification
+ * environment variables. Used by config.module.ts at startup.
+ */
+export const validationSchema = baseEnvSchema
+  .concat(contractEnvSchema)
  * Environment variables for migration safety and ordering.
  */
 export const migrationEnvSchema = Joi.object({

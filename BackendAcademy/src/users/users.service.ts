@@ -23,6 +23,17 @@ export interface UserPrivilegeChangeEvent {
 }
 
 /**
+ * Notification channel preferences for a user.
+ * Used by NotificationsService to verify user consent before delivery (#385).
+ */
+export interface UserNotificationPreferences {
+  userId: string;
+  email_alerts: boolean;
+  push_notifications: boolean;
+  marketing_updates: boolean;
+}
+
+/**
  * User profile data for email template personalization.
  * Includes fallback-safe fields so templates never render blank content.
  */
@@ -113,6 +124,24 @@ export class UsersService {
       return this.privilegeChangeLog.filter((e) => e.userId === userId);
     }
     return this.privilegeChangeLog;
+  }
+
+  /**
+   * Retrieves a user's notification channel preferences.
+   *
+   * Returns default-enabled preferences when no explicit preferences exist,
+   * ensuring notifications are never silently dropped for unconfigured users.
+   */
+  async getUserNotificationPreferences(
+    userId: string,
+  ): Promise<UserNotificationPreferences> {
+    const prefs = this.preferencesByUser.get(userId);
+    return {
+      userId,
+      email_alerts: (prefs?.learnerPreferences?.['email_alerts'] as boolean) ?? true,
+      push_notifications: (prefs?.learnerPreferences?.['push_notifications'] as boolean) ?? true,
+      marketing_updates: (prefs?.learnerPreferences?.['marketing_updates'] as boolean) ?? false,
+    };
   }
 
   /**
