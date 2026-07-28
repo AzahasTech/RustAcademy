@@ -1,16 +1,24 @@
 import {
   Controller,
   Get,
+  Post,
   Param,
+  Query,
+  Body,
   ParseIntPipe,
   HttpCode,
   HttpStatus,
+  NotFoundException,
 } from '@nestjs/common';
 import { RewardsService } from './rewards.service';
 import type {
   UserProgressionResponse,
   ThresholdsResponse,
   LevelThreshold,
+  LeaderboardResponse,
+  UserLeaderboardPosition,
+  PrizePoolResponse,
+  CreatePrizePoolRequest,
 } from './interfaces/rewards.interfaces';
 
 /**
@@ -81,5 +89,86 @@ export class RewardsController {
     @Param('userId') userId: string,
   ): UserProgressionResponse {
     return this.rewardsService.getUserProgression(userId);
+  }
+
+  /**
+   * Returns the top N users on the leaderboard, sorted by XP descending.
+   *
+   * @param topN  Number of entries (default 100, query parameter)
+   *
+   * @example
+   *   GET /rewards/leaderboard?topN=10
+   *   → { leaderboard: [{ rank: 1, userId: "…", xp: 5000, level: 8, title: "Apprentice 3" }, …] }
+   */
+  @Get('leaderboard')
+  @HttpCode(HttpStatus.OK)
+  getLeaderboard(
+    @Query('topN', ParseIntPipe) topN: number,
+  ): LeaderboardResponse {
+    return this.rewardsService.getLeaderboard(topN);
+  }
+
+  /**
+   * Returns a user's current rank, XP, level, and title.
+   *
+   * @example
+   *   GET /rewards/leaderboard/abc-123
+   *   → { userId: "abc-123", rank: 7, xp: 2000, level: 5, title: "Apprentice", totalParticipants: 42 }
+   */
+  @Get('leaderboard/:userId')
+  @HttpCode(HttpStatus.OK)
+  getUserLeaderboardPosition(
+    @Param('userId') userId: string,
+  ): UserLeaderboardPosition {
+    return this.rewardsService.getUserLeaderboardPosition(userId);
+  }
+
+  /**
+   * Returns the current (most recent) prize pool, or 404 if none exist.
+   *
+   * @example
+   *   GET /rewards/prize-pool
+   *   → { id: "prize_…", totalAmount: 1000, currency: "XLM", distributedAt: null, … }
+   */
+  @Get('prize-pool')
+  @HttpCode(HttpStatus.OK)
+  getPrizePool(): PrizePoolResponse {
+    const pool = this.rewardsService.getPrizePool();
+    if (!pool) {
+      throw new NotFoundException('No prize pool has been created yet.');
+    }
+    return pool;
+  }
+
+  /**
+   * Creates a new prize pool with the given amount and optional currency.
+   *
+   * @example
+   *   POST /rewards/prize-pool
+   *   { "totalAmount": 5000, "currency": "XLM" }
+   *   → { id: "prize_…", totalAmount: 5000, … }
+   */
+  @Post('prize-pool')
+  @HttpCode(HttpStatus.CREATED)
+  createPrizePool(
+    @Body() body: CreatePrizePoolRequest,
+  ): PrizePoolResponse {
+    return this.rewardsService.createPrizePool(
+      body.totalAmount,
+      body.currency,
+    );
+  }
+
+  /**
+   * Distributes the current prize pool to the top 10 leaderboard members.
+   *
+   * @example
+   *   POST /rewards/prize-pool/distribute
+   *   → { id: "prize_…", totalAmount: 1000, …, distributedAt: "…", distribution: […] }
+   */
+  @Post('prize-pool/distribute')
+  @HttpCode(HttpStatus.OK)
+  distributePrizes(): PrizePoolResponse {
+    return this.rewardsService.distributePrizes();
   }
 }

@@ -1,31 +1,33 @@
+import { IsString, IsNumber, IsOptional, IsArray, IsEnum, Min, Max, ValidateNested } from 'class-validator';
+import { Type } from 'class-transformer';
 import { GradingResultStatus } from '../interfaces/grading-result-status.enum';
-import { RubricEntry } from '../interfaces/grading-result.interface';
+import { RubricEntryDto } from './rubric-entry.dto';
 
-/**
- * DTO for saving a grading result against a submission.
- *
- * Used by instructors/graders when submitting scores and feedback
- * via POST /submissions/:id/grade.
- */
 export class SaveGradingResultDto {
-  /** ID of the instructor/grader submitting the result */
+  @IsString()
   graderId: string;
 
-  /** Overall outcome of the grade */
+  @IsEnum(GradingResultStatus)
   status: GradingResultStatus;
 
-  /** Numeric score achieved (must be 0 ≤ score ≤ maxScore) */
+  @IsNumber()
+  @Min(0)
   score: number;
 
-  /** Maximum achievable score for this task */
+  @IsNumber()
+  @Min(0)
   maxScore: number;
 
-  /** Student-facing written feedback */
+  @IsString()
   feedback: string;
 
-  /** Private notes visible only to instructors (optional) */
+  @IsOptional()
+  @IsString()
   privateNotes?: string;
 
-  /** Per-criterion rubric breakdown (optional) */
-  rubric?: RubricEntry[];
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => RubricEntryDto)
+  rubric?: RubricEntryDto[];
 }

@@ -94,6 +94,18 @@ export const envSchema = Joi.object({
   CORS_ALLOWED_ORIGINS: Joi.string()
     .empty("")
     .optional()
+    .custom((value, helpers) => {
+      if (
+        process.env.NODE_ENV === "production" &&
+        (!value || value.trim() === "")
+      ) {
+        return helpers.error("any.invalid", {
+          message:
+            "CORS_ALLOWED_ORIGINS is empty — in production, all cross-origin requests will be blocked unless a Vercel preview project is configured via CORS_VERCEL_PROJECT.",
+        });
+      }
+      return value;
+    })
     .description(
       "Comma-separated list of allowed CORS origins (e.g. https:// RustAcademy.to,https://app. RustAcademy.to). " +
         "Required in production when no wildcard is desired.",
@@ -136,6 +148,36 @@ export const envSchema = Joi.object({
   FEATURE_FLAGS_BOOTSTRAP_JSON: Joi.string()
     .empty("")
     .optional()
+    .custom((value, helpers) => {
+      if (!value) return value;
+      try {
+        const parsed = JSON.parse(value);
+        if (!Array.isArray(parsed)) {
+          return helpers.error("any.custom", {
+            message:
+              "FEATURE_FLAGS_BOOTSTRAP_JSON must be a valid JSON array of feature flag objects",
+          });
+        }
+        for (const item of parsed) {
+          if (
+            typeof item !== "object" ||
+            item === null ||
+            typeof item.key !== "string" ||
+            !item.key.trim()
+          ) {
+            return helpers.error("any.custom", {
+              message:
+                "FEATURE_FLAGS_BOOTSTRAP_JSON array items must be objects with a non-empty string 'key' property",
+            });
+          }
+        }
+      } catch (err) {
+        return helpers.error("any.custom", {
+          message: `FEATURE_FLAGS_BOOTSTRAP_JSON contains invalid JSON: ${(err as Error).message}`,
+        });
+      }
+      return value;
+    })
     .description(
       "Optional JSON array of bootstrap feature flags used when the store is unavailable",
     ),
@@ -146,6 +188,12 @@ export const envSchema = Joi.object({
     .optional()
     .description(
       "Soroban contract ID to stream events from (enables Stellar ingestion service)",
+    ),
+
+  INGESTION_ENABLED: Joi.boolean()
+    .default(false)
+    .description(
+      "Explicit safety gate for starting contract event ingestion at boot",
     ),
 
   // ---------------------------------------------------------------------------
@@ -190,7 +238,9 @@ export const envSchema = Joi.object({
     .optional()
     .description(
       "Comma-separated list of bcrypt-hashed API keys for trusted clients. " +
-        "Valid keys receive higher rate limits (120 req/min vs 20 req/min).",
+        "Used for API key authentication only — it has no effect on rate limits. " +
+        "Rate limits are applied per resolved group (public/authenticated/webhooks); " +
+        "see RATE_LIMIT_* variables and rate-limit.config.ts.",
     ),
 
   // Global HTTP rate-limiting profiles (all optional; defaults applied)
@@ -362,7 +412,61 @@ export const envSchema = Joi.object({
     .description(
       "Admin override to disable lag guard temporarily (for emergencies)",
     ),
-});
+
+  // ── Feature Flags ─────────────────────────────────────────────────────────
+  FEATURES_RECONCILIATION_ENABLED: Joi.boolean()
+    .default(true)
+    .description("Whether the reconciliation module is enabled"),
+  FEATURES_NOTIFICATIONS_ENABLED: Joi.boolean()
+    .default(true)
+    .description("Whether the notifications module is enabled"),
+  FEATURES_DEVELOPER_ROUTES_ENABLED: Joi.boolean()
+    .default(false)
+    .description("Whether the developer routes/module is enabled"),
+
+  // ── Export Delivery Pipeline ──────────────────────────────────────────────
+  EXPORT_STORAGE_BUCKET: Joi.string()
+    .empty("")
+    .optional()
+    .description(
+      "Supabase Storage bucket for export files (used for download delivery)",
+    ),
+
+  EXPORT_LINK_EXPIRY_MS: Joi.number()
+    .integer()
+    .min(60_000)
+    .default(604_800_000)
+    .description(
+      "Signed URL expiry for download links in milliseconds (default: 7 days)",
+    ),
+
+  EXPORT_WEBHOOK_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(1_000)
+    .default(30_000)
+    .description("HTTP timeout for webhook export delivery in milliseconds"),
+
+  APP_BASE_URL: Joi.string()
+    .uri({ scheme: ["http", "https"] })
+    .empty("")
+    .optional()
+    .description(
+      "Base URL for constructing absolute download links (e.g. https://app. RustAcademy.to)",
+    ),
+})
+  .custom((value, helpers) => {
+    if (value.INGESTION_ENABLED && !value.RustAcademy_CONTRACT_ID) {
+      return helpers.error("any.custom", {
+        message:
+          "RustAcademy_CONTRACT_ID is required when INGESTION_ENABLED is true",
+      });
+    }
+
+    return value;
+  }, "ingestion safety validation")
+  .messages({
+    "any.custom": "{{#message}}",
+  });
 
 /**
  * Interface for typed environment variables
@@ -391,6 +495,7 @@ export interface EnvConfig {
   FEATURE_FLAGS_CACHE_TTL_MS: number;
   FEATURE_FLAGS_BOOTSTRAP_JSON?: string;
   RustAcademy_CONTRACT_ID?: string;
+  INGESTION_ENABLED: boolean;
   SENDGRID_API_KEY?: string;
   SENDGRID_FROM_EMAIL?: string;
   EXPO_ACCESS_TOKEN?: string;
@@ -424,4 +529,11 @@ export interface EnvConfig {
   INDEXER_LAG_THRESHOLD_LEDGERS: number;
   INDEXER_LAG_GUARD_ENABLED: boolean;
   INDEXER_LAG_GUARD_OVERRIDE: boolean;
+  FEATURES_RECONCILIATION_ENABLED: boolean;
+  FEATURES_NOTIFICATIONS_ENABLED: boolean;
+  FEATURES_DEVELOPER_ROUTES_ENABLED: boolean;
+  EXPORT_STORAGE_BUCKET?: string;
+  EXPORT_LINK_EXPIRY_MS: number;
+  EXPORT_WEBHOOK_TIMEOUT_MS: number;
+  APP_BASE_URL?: string;
 }

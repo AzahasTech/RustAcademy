@@ -1,24 +1,18 @@
 import { Module } from '@nestjs/common';
+import { AuthModule } from '../auth/auth.module';
+import { ChallengesModule } from '../challenges/challenges.module';
+import { MonitoringModule } from '../monitoring/monitoring.module';
+import { GradingResultRepository } from './grading-result.repository';
+import { GradingResultService } from './grading-result.service';
 import { SubmissionController } from './submission.controller';
 import { SubmissionService } from './submission.service';
 import { TutorReviewController } from './tutor-review.controller';
 import { TutorReviewService } from './tutor-review.service';
-import { AuthModule } from '../auth/auth.module';
 
 @Module({
-  imports: [
-    // Provides JwtService for JwtTutorGuard
-    AuthModule,
-  ],
+  imports: [AuthModule, ChallengesModule, MonitoringModule],
   controllers: [SubmissionController, TutorReviewController],
-  providers: [SubmissionService, TutorReviewService],
-  exports: [SubmissionService, TutorReviewService],
-import { GradingResultService } from './grading-result.service';
-import { GradingResultRepository } from './grading-result.repository';
-
-@Module({
-  controllers: [SubmissionController],
   providers: [SubmissionService, GradingResultService, GradingResultRepository],
-  exports: [SubmissionService, GradingResultService],
+  exports: [SubmissionService, GradingResultService, TutorReviewService],
 })
 export class SubmissionModule {}

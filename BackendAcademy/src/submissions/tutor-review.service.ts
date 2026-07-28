@@ -144,13 +144,6 @@ export class TutorReviewService {
       });
     }
 
-    if (dto.status === SubmissionStatus.PENDING) {
-      throw new BadRequestException({
-        error: 'INVALID_REVIEW_STATUS',
-        message: 'Review status cannot be set back to pending',
-      });
-    }
-
     if (dto.score !== undefined && (dto.score < 0 || dto.score > 100)) {
       throw new BadRequestException({
         error: 'INVALID_SCORE',

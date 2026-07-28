@@ -93,6 +93,7 @@ pub fn upgrade_state(env: &Env) -> UpgradeState {
         window_active: storage::is_upgrade_window_active(env),
         window_start,
         window_end,
+        gate_enabled: storage::is_upgrade_gate_enabled(env),
     }
 }
 

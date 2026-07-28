@@ -3,9 +3,7 @@
 import {
   createContext,
   useContext,
-  useEffect,
   useMemo,
-  useState,
   type ReactNode,
 } from "react";
 import {
@@ -14,12 +12,16 @@ import {
   sortNotifications,
   type StoredNotification,
 } from "@/lib/notifications";
+import { usePersistentState } from "@/hooks/usePersistentState";
 
 type NotificationCenterContextValue = {
   notifications: StoredNotification[];
   unreadCount: number;
   markAsRead: (id: string) => void;
   markAllAsRead: () => void;
+  /** True once localStorage has been read on the client. Use this to suppress
+   *  hydration mismatches in any component that renders unread-count badges. */
+  hasHydrated: boolean;
 };
 
 const NotificationCenterContext =
@@ -50,39 +52,27 @@ function mergeStoredNotifications(
 
 export function NotificationCenterProvider({
   children,
+  userId,
 }: {
   children: ReactNode;
+  userId?: string;
 }) {
-  const [notifications, setNotifications] = useState<StoredNotification[]>(
+  const [notifications, setNotifications, hasHydrated] = usePersistentState<StoredNotification[]>(
+    NOTIFICATION_STORAGE_KEY,
     sortNotifications(INITIAL_NOTIFICATIONS),
+    {
+      userId,
+      deserialize: (str: string) => {
+        try {
+          const parsedValue = JSON.parse(str) as StoredNotification[];
+          return mergeStoredNotifications(parsedValue);
+        } catch (e) {
+          console.error("Unable to parse notifications", e);
+          return sortNotifications(INITIAL_NOTIFICATIONS);
+        }
+      },
+    }
   );
-  const [hasHydrated, setHasHydrated] = useState(false);
-
-  useEffect(() => {
-    try {
-      const storedValue = window.localStorage.getItem(NOTIFICATION_STORAGE_KEY);
-
-      if (storedValue) {
-        const parsedValue = JSON.parse(storedValue) as StoredNotification[];
-        setNotifications(mergeStoredNotifications(parsedValue));
-      }
-    } catch (error) {
-      console.error("Unable to restore notifications", error);
-    } finally {
-      setHasHydrated(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!hasHydrated) {
-      return;
-    }
-
-    window.localStorage.setItem(
-      NOTIFICATION_STORAGE_KEY,
-      JSON.stringify(notifications),
-    );
-  }, [hasHydrated, notifications]);
 
   const unreadCount = useMemo(
     () =>
@@ -95,6 +85,7 @@ export function NotificationCenterProvider({
     () => ({
       notifications,
       unreadCount,
+      hasHydrated,
       markAsRead: (id: string) => {
         setNotifications((currentNotifications) =>
           sortNotifications(
@@ -124,7 +115,7 @@ export function NotificationCenterProvider({
         );
       },
     }),
-    [notifications, unreadCount],
+    [notifications, unreadCount, hasHydrated, setNotifications],
   );
 
   return (

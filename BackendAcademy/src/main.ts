@@ -1,23 +1,72 @@
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
-import { ValidationPipe, Logger } from '@nestjs/common';
+import { Logger, VersioningType } from '@nestjs/common';
+import { ValidationPipe, Logger, VersioningType } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import helmet from 'helmet';
+import { createValidationPipe } from './common/validation.pipe';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 
 async function bootstrap() {
-  const app = NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const logger = new Logger('Bootstrap');
+  // Read env through ConfigService so values are validated and coerced by
+  // the Joi schema (lists, numbers, …) identically in every deployment.
+  const config = app.get(ConfigService);
 
-  // Enable CORS
-  (await app).enableCors({
-    origin: process.env.CORS_ORIGIN || '*',
+  app.use(helmet());
+
+  app.enableCors({
+    // Either '*' or an array of origins, already parsed by the env schema.
+    origin: config.get<string | string[]>('CORS_ORIGIN', '*'),
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
     credentials: true,
   });
 
-  // Global validation pipe
-  (await app).useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
+  app.enableVersioning({
+    type: VersioningType.URI,
+    prefix: 'api/v',
+    defaultVersion: '1',
+  });
 
-  const port = process.env.PORT || 3000;
-  await (await app).listen(port);
+  // Shared options (src/common/validation.pipe.ts) guarantee nested DTOs
+  // and arrays are validated — and malformed payloads rejected — the same
+  // way in every controller.
+  app.useGlobalPipes(createValidationPipe());
+
+  const swaggerConfig = new DocumentBuilder()
+    .setTitle('RustAcademy API')
+    .setDescription('The RustAcademy Backend API')
+    .setVersion('1.0')
+    .addBearerAuth()
+    .build();
+  const document = SwaggerModule.createDocument(app, swaggerConfig);
+  SwaggerModule.setup('api/docs', app, document);
+
+  // Serve read-only, prebuilt static assets from `ASSETS_STATIC_DIR`
+  // (default: `./public`) at the URL prefix `/static`. The directory is
+  // created on demand if missing so the backend can boot in a fresh
+  // clone without crashing.
+  const staticDir = path.resolve(
+    config.get<string>('ASSETS_STATIC_DIR', './public'),
+  );
+  try {
+    fs.mkdirSync(staticDir, { recursive: true });
+    app.useStaticAssets(staticDir, { prefix: '/static/' });
+    logger.log(`Static assets served from ${staticDir} at /static/`);
+  } catch (err) {
+    logger.warn(
+      `Failed to mount static asset directory ${staticDir}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+
+  const port = config.get<number>('PORT', 3000);
+  await app.listen(port);
   logger.log(`Backend running on http://localhost:${port}`);
 }
 bootstrap();

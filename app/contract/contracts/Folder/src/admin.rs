@@ -316,6 +316,27 @@ pub fn migrate(env: &Env, caller: &Address) -> Result<u32, RustAcademyError> {
 fn migrate_legacy_to_v1(env: &Env) -> u32 {
     storage::set_contract_version(env, storage::CURRENT_CONTRACT_VERSION);
     storage::set_initialized(env, true);
+
+    // Migrate FeeConfig schema version if it exists
+    let key = storage::DataKey::FeeConfig;
+    if let Some(mut fee_cfg) = env.storage().persistent().get(&key) {
+        storage::migrate_fee_config(&mut fee_cfg);
+        env.storage().persistent().set(&key, &fee_cfg);
+        storage::set_or_extend_ttl(env, &key, storage::RecordType::FeeConfig);
+    }
+
+    // Migrate OracleFeeConfig schema version if it exists
+    let key = storage::DataKey::OracleFeeConfig;
+    if let Some(mut oracle_cfg) = env.storage().persistent().get(&key) {
+        storage::migrate_oracle_fee_config(&mut oracle_cfg);
+        env.storage().persistent().set(&key, &oracle_cfg);
+        storage::set_or_extend_ttl(env, &key, storage::RecordType::FeeConfig);
+    }
+
+    // Note: EscrowEntry and StealthEscrowEntry records are migrated on-read
+    // via the schema_version field check in get_escrow/get_stealth_escrow.
+    // PerAssetFeeConfig records are migrated on-write via set_per_asset_fee.
+
     storage::CURRENT_CONTRACT_VERSION
 }
 
@@ -351,6 +372,11 @@ pub fn start_upgrade(
     new_wasm_hash: BytesN<32>,
 ) -> Result<(), RustAcademyError> {
     require_admin(env, caller)?;
+
+    // Check upgrade gate master switch (Issue #318)
+    if !storage::is_upgrade_gate_enabled(env) {
+        return Err(RustAcademyError::UpgradeWindowNotActive);
+    }
 
     // Check upgrade window is active (Issue #432 AC1)
     if !storage::is_upgrade_window_active(env) {
@@ -613,6 +639,20 @@ pub fn set_pause_flags(
 }
 
 /// Set fee configuration (**Admin or Operator only**).
+///
+/// Sets the global fee applied to all tokens unless overridden by per-asset configuration.
+/// Fee is expressed in basis points: 1 = 0.01%, 100 = 1%, 10000 = 100%.
+///
+/// This is a fallback; per-asset overrides (via [`set_per_asset_fee`]) take precedence.
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `caller` - Address requesting the change (must have Admin or Operator role)
+/// * `config` - New fee configuration
+///
+/// # Errors
+/// - `InsufficientRole` if caller lacks required role
+/// - `ContractPaused` if admin pause flag is enabled
 pub fn set_fee_config(
     env: &Env,
     caller: &Address,
@@ -625,7 +665,47 @@ pub fn set_fee_config(
     Ok(())
 }
 
-/// Set per-asset fee configuration (**Admin or Operator only**).
+/// Set per-asset fee configuration for a specific token (**Admin or Operator only**).
+///
+/// Overrides the global fee for a specific token. Highest priority in fee resolution:
+/// 1. Per-asset override (this) — if set
+/// 2. Oracle dynamic pricing — if configured and fresh
+/// 3. Global static fee — fallback
+///
+/// Setting `fee_bps = 0` explicitly disables fees for that token.
+///
+/// # Fee Splits
+///
+/// **Legacy (arbiter_bps)**: Simple percentage split
+/// - `arbiter_bps > 0` → that % of fee goes to arbiter (if arbiter present in payout)
+/// - Remainder to collector
+///
+/// **Explicit (FeeRatio)**: Fine-grained control
+/// - Set `arbiter_fee`, `platform_fee`, or `collector_fee` with FeeRatio
+/// - When any explicit ratio is set, legacy `arbiter_bps` is ignored
+/// - Sum of ratios must not exceed 1.0
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `caller` - Address requesting the change (must have Admin or Operator role)
+/// * `token` - Token address to configure
+/// * `config` - Per-asset fee configuration
+///
+/// # Errors
+/// - `InsufficientRole` if caller lacks required role
+/// - `InvalidAmount` if fee_bps or arbiter_bps > 10000
+/// - `FeeSplitExceedsTotal` if explicit ratios sum to > 1.0
+/// - Other validation errors from `PerAssetFeeConfig::validate()`
+///
+/// # Examples
+/// Set 1.5% fee for USDC with no arbiter split:
+/// ```ignore
+/// set_per_asset_fee(env, caller, &usdc_token, &PerAssetFeeConfig {
+///     fee_bps: 150,
+///     arbiter_bps: 0,
+///     ..Default::default()
+/// })?;
+/// ```
 pub fn set_per_asset_fee(
     env: &Env,
     caller: &Address,

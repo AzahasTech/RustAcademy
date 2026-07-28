@@ -64,15 +64,16 @@ use soroban_sdk::{token, Address, Bytes, BytesN, Env, Vec};
 
 use crate::{
     admin, commitment, dispute,
-    errors:: RustAcademyError,
+    errors::RustAcademyError,
     escrow_id, events, fee_router, hook,
     storage::{
-        clear_dispute_state, count_dispute_votes, get_commitment_escrow_id, get_dispute_vote,
-        get_escrow, get_escrow_id_mapping, get_fee_config, get_oracle_fee_config,
-        get_per_asset_fee, get_platform_wallet, has_dispute_vote, has_escrow,
-        put_commitment_escrow_id, put_dispute_vote, put_escrow, put_escrow_id_mapping,
-        remove_commitment_escrow_id, remove_dispute_vote, remove_escrow,
-        remove_escrow_id_mapping, LEDGER_THRESHOLD, SIX_MONTHS_IN_LEDGERS,
+        clear_dispute_state, count_dispute_votes, get_commitment_escrow_id,
+        get_dispute_vote, get_escrow, get_escrow_id_mapping, get_fee_config,
+        get_oracle_fee_config, get_per_asset_fee, get_platform_wallet, has_dispute_vote,
+        has_escrow, put_commitment_escrow_id, put_dispute_vote, put_escrow,
+        put_escrow_id_mapping, remove_commitment_escrow_id,
+        remove_dispute_votes_for_escrow, remove_escrow, remove_escrow_id_mapping, DataKey,
+        LEDGER_THRESHOLD, SIX_MONTHS_IN_LEDGERS,
     },
     types::{
         DisputeVote, EscrowEntry, EscrowOperationEstimate, EscrowOperationLimits, EscrowStatus,
@@ -369,6 +370,7 @@ pub fn deposit(
         arbiter,
         arbiters: Vec::new(env),
         arbiter_threshold: 0,
+        schema_version: crate::types::ESCROW_SCHEMA_VERSION,
     };
 
     put_escrow(env, &commitment_bytes, &entry);
@@ -497,6 +499,7 @@ pub fn deposit_with_arbiters(
         arbiter: None,
         arbiters,
         arbiter_threshold: threshold,
+        schema_version: crate::types::ESCROW_SCHEMA_VERSION,
     };
 
     put_escrow(env, &commitment_bytes, &entry);
@@ -584,6 +587,7 @@ pub fn deposit_with_commitment(
         arbiter,
         arbiters: Vec::new(env),
         arbiter_threshold: 0,
+        schema_version: crate::types::ESCROW_SCHEMA_VERSION,
     };
 
     put_escrow(env, &commitment_bytes, &entry);
@@ -696,6 +700,7 @@ pub fn deposit_partial(
         arbiter,
         arbiters: Vec::new(env),
         arbiter_threshold: 0,
+        schema_version: crate::types::ESCROW_SCHEMA_VERSION,
     };
 
     put_escrow(env, &commitment_bytes, &entry);
@@ -1018,15 +1023,11 @@ pub fn extend_escrow_ttl(env: &Env, commitment: BytesN<32>) -> Result<(),  RustA
 
 /// Cleanup terminal escrow entries to reclaim storage deposits.
 ///
-/// Only escrows in `Spent` or `Refunded` status can be removed. In addition to
-/// the primary record, this removes every auxiliary index that referenced the
-/// escrow so no stale lookup can resolve to a removed entry (Issue #51):
+/// Only escrows in `Spent` or `Refunded` status can be removed.
+/// Also removes the associated EscrowIdMap and any dispute votes
+/// for Disputed escrows that were resolved before cleanup.
 ///
-/// - the `escrow_id → commitment` dedup mapping and its reverse index, and
-/// - any per-arbiter dispute votes recorded for the commitment.
-///
-/// All cleanup is bounded: index removals are O(1) and dispute-vote removal is
-/// O(number of arbiters on the escrow). No path iterates global contract state.
+/// Issue #19: Bounded cleanup ensures no orphaned mappings remain.
 pub fn cleanup_escrow(env: &Env, commitment: BytesN<32>) -> Result<(),  RustAcademyError> {
     let commitment_bytes: Bytes = commitment.clone().into();
     let entry: EscrowEntry =
@@ -1034,9 +1035,6 @@ pub fn cleanup_escrow(env: &Env, commitment: BytesN<32>) -> Result<(),  RustAcad
 
     match entry.status {
         EscrowStatus::Spent | EscrowStatus::Refunded => {
-            // Primary record first.
-            remove_escrow(env, &commitment_bytes);
-
             let mut indices_removed: u32 = 0;
 
             // Dedup mapping (escrow_id → commitment) plus its reverse index.
@@ -1046,13 +1044,29 @@ pub fn cleanup_escrow(env: &Env, commitment: BytesN<32>) -> Result<(),  RustAcad
                 indices_removed += 2;
             }
 
-            // Per-arbiter dispute votes (bounded by the escrow's arbiter set).
-            for arbiter in entry.arbiters.iter() {
-                if has_dispute_vote(env, &commitment_bytes, &arbiter) {
-                    remove_dispute_vote(env, &commitment_bytes, &arbiter);
+            // Remove dispute votes if this was a disputed escrow that was resolved.
+            if matches!(entry.status, EscrowStatus::Refunded) && entry.arbiter.is_some() {
+                // Single arbiter mode - remove the vote if it exists
+                let arbiter = entry.arbiter.unwrap();
+                let key = DataKey::DisputeVote(commitment_bytes.clone(), arbiter);
+                if env.storage().persistent().has(&key) {
+                    env.storage().persistent().remove(&key);
                     indices_removed += 1;
                 }
+            } else if entry.arbiter_threshold > 0 {
+                // Multi-sig mode - remove all votes for this escrow
+                for arbiter in entry.arbiters.iter() {
+                    if has_dispute_vote(env, &commitment_bytes, &arbiter) {
+                        indices_removed += 1;
+                    }
+                }
+                remove_dispute_votes_for_escrow(env, &commitment_bytes, &entry.arbiters);
             }
+
+            remove_escrow(env, &commitment_bytes);
+
+            // Publish cleanup event for indexers
+            events::publish_escrow_cleanup(env, commitment.clone());
 
             // Issue #49: reclaim dispute expiry metadata storage rent.
             clear_dispute_state(env, &commitment_bytes, &entry.arbiters);

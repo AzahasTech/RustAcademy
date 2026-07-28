@@ -7,13 +7,8 @@ import {
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Request } from 'express';
-
-export interface TutorJwtPayload {
-  sub: string;
-  role: string;
-  iat?: number;
-  exp?: number;
-}
+import { JwtPayload } from '../interfaces/jwt-payload.interface';
+import { UserRole } from '../enums/user-role.enum';
 
 /**
  * Protects routes that require a valid tutor JWT.
@@ -38,9 +33,9 @@ export class JwtTutorGuard implements CanActivate {
       });
     }
 
-    let payload: TutorJwtPayload;
+    let payload: JwtPayload;
     try {
-      payload = await this.jwtService.verifyAsync<TutorJwtPayload>(token);
+      payload = await this.jwtService.verifyAsync<JwtPayload>(token);
     } catch {
       throw new UnauthorizedException({
         error: 'INVALID_TOKEN',
@@ -48,7 +43,7 @@ export class JwtTutorGuard implements CanActivate {
       });
     }
 
-    if (payload.role !== 'tutor') {
+    if (payload.role !== UserRole.TUTOR) {
       throw new ForbiddenException({
         error: 'TUTOR_ROLE_REQUIRED',
         message: 'Only tutors are allowed to access this resource',
@@ -56,7 +51,7 @@ export class JwtTutorGuard implements CanActivate {
     }
 
     // Attach decoded tutor identity for downstream handlers
-    (request as Request & { tutor: TutorJwtPayload }).tutor = payload;
+    (request as Request & { tutor: JwtPayload }).tutor = payload;
     return true;
   }
 
