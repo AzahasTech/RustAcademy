@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, Optional, ConflictException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { CourseEntity } from './course.entity';
@@ -15,6 +15,8 @@ import {
   TransactionSnapshot,
 } from '../common/transaction-manager.service';
 import { CertificateService, CertificateRecord } from './certificate.service';
+import { SearchIndexerService } from '../search/search-indexer.service';
+import { RedisService } from '../redis/redis.service';
 
 /**
  * Business logic for courses.
@@ -57,6 +59,10 @@ export class CourseService {
     private readonly certificateService: CertificateService,
     @Optional()
     private readonly contractAdapter?: IContractAdapter,
+    @Optional()
+    private readonly searchIndexer?: SearchIndexerService,
+    @Optional()
+    private readonly redisService?: RedisService,
   ) {}
 
   async create(dto: CreateCourseDto): Promise<CourseEntity> {
@@ -69,6 +75,7 @@ export class CourseService {
     await this.appendRevision(saved, 'create', {
       changeNote: 'Initial version',
     });
+    this.notifyContentChanged(saved, 'create');
     return saved;
   }
 
@@ -102,6 +109,7 @@ export class CourseService {
       revisionAuthor: dto.revisionAuthor,
       previousVersion,
     });
+    this.notifyContentChanged(saved, 'update');
     return saved;
   }
 
@@ -109,7 +117,38 @@ export class CourseService {
     const course = await this.courseRepo.findOne({ where: { id } });
     if (!course) return false;
     await this.courseRepo.remove(course);
+    // #369: keep the search index in sync with removals
+    this.searchIndexer?.removeCourse(id);
+    // #379: drop any cached entries derived from this course
+    await this.redisService?.invalidateContentCache('course', id);
     return true;
+  }
+
+  /**
+   * Notify downstream consumers (search index, Redis cache) that a course
+   * has been created, updated, or restored. Failures here are logged but
+   * never bubble up — a transient indexer/cache miss must not break the
+   * primary write path.
+   */
+  private notifyContentChanged(course: CourseEntity, _op: 'create' | 'update' | 'restore'): void {
+    try {
+      this.searchIndexer?.indexCourse(course);
+    } catch (err) {
+      this.logger.warn(
+        `[#369] search index update failed for course ${course.id}: ${(err as Error).message}`,
+      );
+    }
+    // Fire-and-forget the cache invalidation so we don't block the write.
+    // Swallow async rejections explicitly to keep them out of the
+    // unhandled-rejection log.
+    const invalidation = this.redisService?.invalidateContentCache('course', course.id);
+    if (invalidation && typeof invalidation.catch === 'function') {
+      invalidation.catch((err: Error) => {
+        this.logger.warn(
+          `[#379] redis cache invalidation failed for course ${course.id}: ${err.message}`,
+        );
+      });
+    }
   }
 
   // ──────────────────────────────────────────────────────────────────
@@ -191,6 +230,7 @@ export class CourseService {
       previousVersion,
       referenceRevisionId: sourceRevision.id,
     });
+    this.notifyContentChanged(saved, 'restore');
     return saved;
   }
 
