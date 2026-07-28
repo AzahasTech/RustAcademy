@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { CourseEntity } from './course.entity';
@@ -9,6 +9,7 @@ import {
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
 import { RewardsService } from '../rewards/rewards.service';
+import { IContractAdapter } from '../contracts';
 
 /**
  * Business logic for courses.
@@ -18,13 +19,15 @@ import { RewardsService } from '../rewards/rewards.service';
  * Each meaningful course change appends an immutable revision to the
  * `course_revisions` table so the full version history is preserved as
  * an append-only audit trail.
+ *
+ * #396: Contract operations (reward recording, certificate minting)
+ * are isolated behind the {@link IContractAdapter} interface rather than
+ * being tightly coupled to contract-specific logic. When the adapter is
+ * not available (e.g., in test environments), contract operations are
+ * gracefully skipped.
  */
 @Injectable()
 export class CourseService {
-  /**
-   * Baseline version assigned to brand-new courses.  Kept as a private
-   * constant so the initial version can never drift away from `1`.
-   */
   private static readonly INITIAL_VERSION = 1;
 
   constructor(
@@ -33,6 +36,8 @@ export class CourseService {
     @InjectRepository(CourseRevisionEntity)
     private readonly revisionRepo: Repository<CourseRevisionEntity>,
     private readonly rewardsService: RewardsService,
+    @Optional()
+    private readonly contractAdapter?: IContractAdapter,
   ) {}
 
   async create(dto: CreateCourseDto): Promise<CourseEntity> {
@@ -85,20 +90,13 @@ export class CourseService {
     const course = await this.courseRepo.findOne({ where: { id } });
     if (!course) return false;
     await this.courseRepo.remove(course);
-    // Revisions are intentionally retained so admins can audit what content
-    // was previously published even after the parent course row is gone.
     return true;
   }
 
-  // ---------------------------------------------------------------------------
+  // ──────────────────────────────────────────────────────────────────
   // Revision history API
-  // ---------------------------------------------------------------------------
+  // ──────────────────────────────────────────────────────────────────
 
-  /**
-   * Returns the full revision history for a course, ordered by version ascending.
-   * Revisions remain queryable even after the parent course has been removed
-   * so the audit trail can still be inspected.
-   */
   async getRevisions(courseId: string): Promise<CourseRevisionEntity[]> {
     return this.revisionRepo.find({
       where: { courseId },
@@ -106,9 +104,6 @@ export class CourseService {
     });
   }
 
-  /**
-   * Returns the latest revision for a course, or null when no revisions exist.
-   */
   async getLatestRevision(
     courseId: string,
   ): Promise<CourseRevisionEntity | null> {
@@ -118,10 +113,6 @@ export class CourseService {
     });
   }
 
-  /**
-   * Returns a specific revision by its numeric version for a given course.
-   * Returns null when the revision cannot be found.
-   */
   async getRevisionByVersion(
     courseId: string,
     version: number,
@@ -135,12 +126,6 @@ export class CourseService {
     return this.revisionRepo.findOne({ where: { courseId, version } });
   }
 
-  /**
-   * Restores the content of a course to a previous revision.  The restore
-   * operation itself is recorded as a new revision so the audit trail
-   * remains append-only and the current version always points at the
-   * latest revision.
-   */
   async restoreRevision(
     courseId: string,
     version: number,
@@ -190,27 +175,69 @@ export class CourseService {
     return saved;
   }
 
-  /**
-   * Returns the total number of revisions recorded for a course.
-   */
   async getRevisionCount(courseId: string): Promise<number> {
     return this.revisionRepo.count({ where: { courseId } });
   }
 
-  // ---------------------------------------------------------------------------
-  // Internals
-  // ---------------------------------------------------------------------------
+  // ──────────────────────────────────────────────────────────────────
+  // Course completion with contract adapter (#396)
+  // ──────────────────────────────────────────────────────────────────
 
-  /**
-   * Persist a new revision snapshot of the course and update the course's
-   * `latestRevisionId` pointer in one round-trip each.
-   *
-   * Returns the saved revision so callers can read its id without an extra
-   * query.  Revisions are immutable once recorded.
-   *
-   * Persistence order is forced by FK constraints: the course must exist
-   * before the revision that references it can be inserted.
-   */
+  async completeCourse(id: string, userId: string) {
+    const course = await this.courseRepo.findOne({ where: { id } });
+    if (!course) {
+      throw new NotFoundException(`Course with ID ${id} not found.`);
+    }
+
+    const xpReward = course.xpReward || 50;
+    const result = this.rewardsService.recordActivity(userId, new Date(), xpReward);
+
+    // ── #396: Mint certificate NFT via contract adapter ─────────────
+    let certificateResult:
+      | { tokenId: string; transactionHash: string }
+      | undefined;
+    if (this.contractAdapter) {
+      try {
+        certificateResult = await this.contractAdapter.mintCertificate(
+          userId,
+          id,
+          {
+            courseTitle: course.title,
+            xpReward,
+            completedAt: new Date().toISOString(),
+          },
+        );
+
+        // Record the on-chain reward as well
+        await this.contractAdapter.recordReward(
+          userId,
+          xpReward,
+          `Completed course: ${course.title}`,
+        );
+      } catch (err) {
+        // #396: Contract failures should not block course completion.
+        // The user gets their XP reward regardless.
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[CourseService] Contract adapter operation failed during course completion (non-blocking): ${err}`,
+        );
+      }
+    }
+
+    return {
+      message: 'Course completed successfully',
+      courseId: id,
+      userId,
+      xpAwarded: xpReward,
+      progression: result,
+      certificate: certificateResult,
+    };
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // Internals
+  // ──────────────────────────────────────────────────────────────────
+
   private async appendRevision(
     course: CourseEntity,
     reason: CourseRevisionReason,
@@ -254,46 +281,6 @@ export class CourseService {
     return savedRevision;
   }
 
-  private popularCourseIds: string[] = [];
-
-  setPopularCourseIds(ids: string[]): void {
-    this.popularCourseIds = ids;
-  }
-
-  getPopularCourseIds(): string[] {
-    return this.popularCourseIds;
-  }
-
-  async getCacheWarmKeys(): Promise<string[]> {
-    const ids = this.popularCourseIds.length > 0
-      ? this.popularCourseIds
-      : (await this.findAll()).map((c) => c.id).slice(0, 20);
-    const keys: string[] = [];
-    for (const id of ids) {
-      keys.push(`course:${id}`);
-    }
-    return keys;
-  }
-
-  async completeCourse(id: string, userId: string) {
-    const course = await this.courseRepo.findOne({ where: { id } });
-    if (!course) {
-      throw new NotFoundException(`Course with ID ${id} not found.`);
-    }
-
-    // Reward the user for completing the course
-    const xpReward = course.xpReward || 50; // Default to 50 XP if not specified
-    const result = this.rewardsService.recordActivity(userId, new Date(), xpReward);
-
-    return {
-      message: 'Course completed successfully',
-      courseId: id,
-      userId,
-      xpAwarded: xpReward,
-      progression: result,
-    };
-  }
-
   private syncCourseTaxonomy(
     course: CourseEntity,
     dto: Pick<UpdateCourseDto, 'category' | 'categories'>,
@@ -306,12 +293,6 @@ export class CourseService {
     }
   }
 
-  /**
-   * Same as findById, but throws instead of returning null. Use this in
-   * any code path (e.g. rendering a course + its lessons) where silently
-   * continuing with an undefined course would surface as a downstream
-   * server error rather than a clean 404.
-   */
   async getOrFail(id: string): Promise<CourseEntity> {
     const course = await this.findById(id);
     if (!course) {
