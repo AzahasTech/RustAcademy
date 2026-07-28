@@ -1,6 +1,4 @@
 import { Injectable, Logger, Inject, Optional } from '@nestjs/common';
-import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { Notification } from './interfaces/notifications.interface';
 import {
   INotificationProvider,
@@ -113,7 +111,11 @@ export class NotificationsService {
     @Optional()
     @Inject(NOTIFICATION_PROVIDERS)
     private readonly providers?: INotificationProvider[],
-  ) {}
+    @Optional()
+    private readonly configService?: ConfigService,
+  ) {
+    this.defaultTimeoutMs = this.configService?.get<number>('DEFAULT_REQUEST_TIMEOUT_MS') ?? 30_000;
+  }
 
   // ── Batch configuration (#386) ────────────────────────────
 
@@ -132,10 +134,6 @@ export class NotificationsService {
   }
 
   // ── Notification CRUD ────────────────────────────────────
-    private readonly configService?: ConfigService,
-  ) {
-    this.defaultTimeoutMs = this.configService?.get<number>('DEFAULT_REQUEST_TIMEOUT_MS') ?? 30_000;
-  }
 
   createReportNotification(reportId: string, templateName: 'reportTriaged' | 'reportEscalated' | 'reportResolved'): Notification {
     return this.createLocalized('system', templateName, 'in-app');
@@ -180,10 +178,46 @@ export class NotificationsService {
     });
   }
 
-  // ── Provider-based delivery (#388) ───────────────────────
+  // ── Preference-aware provider delivery (#385) ────────────
 
   /**
-   * Delivers a notification through all registered providers.
+   * Checks whether a user has opted into a given notification channel.
+   * Falls back to a sensible default (enabled) when no explicit preference exists.
+   */
+  private isChannelEnabled(userId: string, channel: keyof NotificationPreferences): boolean {
+    const prefs = this.getPreferences(userId);
+    return prefs[channel] !== false;
+  }
+
+  /**
+   * Filters the available providers down to the ones the user has opted into.
+   *
+   * Maps each provider to its corresponding preference key:
+   *   - 'email'  → email_alerts
+   *   - 'push'   → push_notifications
+   *   - 'in-app' → push_notifications (in-app uses push channel)
+   */
+  private getEnabledProviders(
+    userId: string,
+  ): INotificationProvider[] {
+    if (!this.providers) return [];
+
+    const channelMap: Record<string, keyof NotificationPreferences> = {
+      email: 'email_alerts',
+      push: 'push_notifications',
+      'in-app': 'push_notifications',
+    };
+
+    return this.providers.filter((p) => {
+      const prefKey = channelMap[p.providerId];
+      if (!prefKey) return true; // unknown providers default to enabled
+      return this.isChannelEnabled(userId, prefKey);
+    });
+  }
+
+  /**
+   * Delivers a notification through all registered providers,
+   * respecting user notification preferences.
    *
    * High-priority notifications are delivered immediately.
    * Low-priority notifications may be batched if batching is enabled.
@@ -207,19 +241,24 @@ export class NotificationsService {
   }
 
   /**
-   * Delivers a notification immediately through all providers.
+   * Delivers a notification immediately through all providers
+   * that the user has enabled in their preferences.
    */
   private async deliverImmediately(
     notification: Notification,
     context: DeliveryContext,
   ): Promise<DeliveryResult[]> {
-    if (!this.providers || this.providers.length === 0) {
-      this.logger.warn('No notification providers registered — notification stored only');
+    const enabledProviders = this.getEnabledProviders(context.userId);
+
+    if (enabledProviders.length === 0) {
+      this.logger.warn(
+        `No enabled providers for user ${context.userId} — notification stored only`,
+      );
       return [];
     }
 
     const results = await Promise.allSettled(
-      this.providers.map((provider) =>
+      enabledProviders.map((provider) =>
         provider.send(notification, context),
       ),
     );
@@ -229,7 +268,7 @@ export class NotificationsService {
         return result.value;
       }
       this.logger.error(
-        `Provider ${this.providers![index].providerId} failed: ${result.reason}`,
+        `Provider ${enabledProviders[index].providerId} failed: ${result.reason}`,
       );
       return {
         success: false,
@@ -310,15 +349,15 @@ export class NotificationsService {
     this.logger.log(`Flushing batch of ${batch.length} notifications`);
 
     const ctx = context || { userId: 'batch', priority: NotificationPriority.LOW };
+    const enabledProviders = this.getEnabledProviders(ctx.userId);
     const allResults: DeliveryResult[] = [];
 
-    if (this.providers && this.providers.length > 0) {
-      for (const provider of this.providers) {
+    if (enabledProviders.length > 0) {
+      for (const provider of enabledProviders) {
         if (provider.sendBatch) {
           const results = await provider.sendBatch(batch, ctx);
           allResults.push(...results);
         } else {
-          // Fallback: send individually if no batch support
           for (const notification of batch) {
             const result = await provider.send(notification, ctx);
             allResults.push(result);
@@ -391,6 +430,8 @@ export class NotificationsService {
       })),
     );
     return results;
+  }
+
   /**
    * Sends an outbound push notification with a global request timeout — Issue #408.
    */
@@ -426,6 +467,8 @@ export class NotificationsService {
       clearTimeout(timer);
     }
   }
+
+  /**
    * Notifies a user that a signed asset URL is about to expire.
    */
   notifySignedUrlExpiring(
