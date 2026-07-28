@@ -75,6 +75,7 @@ export class DatabaseService implements OnModuleInit {
   private coupons: Map<string, CouponRecord> = new Map();
   private redemptions: RedemptionRecord[] = [];
   private payments: Map<string, PaymentRecord> = new Map();
+  private migrationsApplied: string[] = [];
 
   constructor(private readonly transactionManager: TransactionManagerService) {}
 
@@ -92,6 +93,27 @@ export class DatabaseService implements OnModuleInit {
 
   onModuleInit() {
     this.seedSampleCoupons();
+    this.ensureMigrationTracking();
+  }
+
+  /**
+   * Ensures migration tracking table is initialized.
+   * Runs as part of startup to guarantee migration order awareness.
+   */
+  private ensureMigrationTracking(): void {
+    this.migrationsApplied = [];
+  }
+
+  recordMigrationApplied(name: string): void {
+    this.migrationsApplied.push(name);
+  }
+
+  getAppliedMigrations(): string[] {
+    return [...this.migrationsApplied];
+  }
+
+  hasMigrationBeenApplied(name: string): boolean {
+    return this.migrationsApplied.includes(name);
   }
 
   private seedSampleCoupons() {

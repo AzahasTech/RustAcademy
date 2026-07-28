@@ -32,6 +32,7 @@ import { SearchModule } from './search/search.module';
 import { PaymentsModule } from './payments/payments.module';
 import { I18nModule } from './i18n/i18n.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { DlqModule } from './dead-letter-queue/dlq.module';
 import { CorrelationIdMiddleware } from './common/correlation-id.middleware';
 
 /**
@@ -85,6 +86,7 @@ import { CorrelationIdMiddleware } from './common/correlation-id.middleware';
     PaymentsModule,
     I18nModule,
     NotificationsModule,
+    DlqModule,
   ],
   controllers: [AppController, ApiInfoController],
   providers: [
