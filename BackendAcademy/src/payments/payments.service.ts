@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { CorrelationLoggerService } from '../logging/logger.service';
 import { DatabaseService } from '../database/database.service';
 import { TransactionHistoryQueryDto } from './dto/transaction-history-query.dto';
 import {
@@ -112,11 +113,16 @@ export class PaymentsService {
     let lastError: string | undefined;
     for (let attempt = 1; attempt <= webhook.maxRetries; attempt++) {
       try {
-        const statusCode = await deliverFn(webhook.url, webhook.body, {
+        const headers: Record<string, string> = {
           'X-Webhook-Signature': webhook.signature,
           'X-Idempotency-Key': webhook.idempotencyKey,
           'X-Webhook-Attempt': String(attempt),
-        });
+        };
+        const correlationId = CorrelationLoggerService.getCorrelationId();
+        if (correlationId) {
+          headers['x-correlation-id'] = correlationId;
+        }
+        const statusCode = await deliverFn(webhook.url, webhook.body, headers);
         if (statusCode >= 200 && statusCode < 300) {
           this.logger.log(`Webhook ${webhook.id} delivered on attempt ${attempt}`);
           return { success: true, attempts: attempt };
@@ -186,6 +192,13 @@ export class PaymentsService {
   }
 
   async getRedemptionHistory(userId: string) {
+    return this.databaseService.getRedemptionsByUser(userId);
+  }
+
+  async getAllCoupons() {
+    return this.databaseService.getAllCoupons();
+  }
+} async getRedemptionHistory(userId: string) {
     return this.databaseService.getRedemptionsByUser(userId);
   }
 

@@ -402,10 +402,17 @@ export class NotificationsService {
     const timeout = timeoutMs ?? this.defaultTimeoutMs;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
+
+    const headers = new Headers({ 'Content-Type': 'application/json' });
+    const correlationId = CorrelationLoggerService.getCorrelationId();
+    if (correlationId) {
+      headers.set('x-correlation-id', correlationId);
+    }
+
     try {
       const response = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(payload),
         signal: controller.signal,
       });
@@ -418,6 +425,7 @@ export class NotificationsService {
     } finally {
       clearTimeout(timer);
     }
+  }
    * Notifies a user that a signed asset URL is about to expire.
    */
   notifySignedUrlExpiring(
