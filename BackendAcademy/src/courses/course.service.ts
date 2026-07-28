@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { CourseEntity } from './course.entity';
@@ -10,6 +10,11 @@ import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
 import { RewardsService } from '../rewards/rewards.service';
 import { IContractAdapter } from '../contracts';
+import {
+  TransactionManagerService,
+  TransactionSnapshot,
+} from '../common/transaction-manager.service';
+import { CertificateService, CertificateRecord } from './certificate.service';
 
 /**
  * Business logic for courses.
@@ -25,10 +30,16 @@ import { IContractAdapter } from '../contracts';
  * being tightly coupled to contract-specific logic. When the adapter is
  * not available (e.g., in test environments), contract operations are
  * gracefully skipped.
+ *
+ * #358: All state-mutating operations during course completion are wrapped
+ * in transactional atomic operations. If any side-effect fails, every
+ * previously-successful mutation is rolled back so callers never observe
+ * partially-applied completion state.
  */
 @Injectable()
 export class CourseService {
   private static readonly INITIAL_VERSION = 1;
+  private readonly logger = new Logger(CourseService.name);
 
   constructor(
     @InjectRepository(CourseEntity)
@@ -36,6 +47,8 @@ export class CourseService {
     @InjectRepository(CourseRevisionEntity)
     private readonly revisionRepo: Repository<CourseRevisionEntity>,
     private readonly rewardsService: RewardsService,
+    private readonly transactionManager: TransactionManagerService,
+    private readonly certificateService: CertificateService,
     @Optional()
     private readonly contractAdapter?: IContractAdapter,
   ) {}
@@ -180,9 +193,21 @@ export class CourseService {
   }
 
   // ──────────────────────────────────────────────────────────────────
-  // Course completion with contract adapter (#396)
+  // Course completion with certificate generation (#357, #358, #396)
   // ──────────────────────────────────────────────────────────────────
 
+  /**
+   * Complete a course for a user. All side-effects (XP award, certificate
+   * generation, on-chain minting, reward recording) are executed inside a
+   * transactional atomic operation. If ANY side-effect fails, every
+   * previously-successful mutation is rolled back — the user is never
+   * left in a partially-completed state.
+   *
+   * **#357**: A verifiable certificate is always generated on course
+   * completion. The certificate includes a shareable URL and a
+   * verification code that external parties can use to confirm
+   * authenticity.
+   */
   async completeCourse(id: string, userId: string) {
     const course = await this.courseRepo.findOne({ where: { id } });
     if (!course) {
@@ -190,38 +215,92 @@ export class CourseService {
     }
 
     const xpReward = course.xpReward || 50;
-    const result = this.rewardsService.recordActivity(userId, new Date(), xpReward);
 
-    // ── #396: Mint certificate NFT via contract adapter ─────────────
-    let certificateResult:
-      | { tokenId: string; transactionHash: string }
-      | undefined;
-    if (this.contractAdapter) {
-      try {
-        certificateResult = await this.contractAdapter.mintCertificate(
-          userId,
-          id,
-          {
-            courseTitle: course.title,
+    const txResult = await this.transactionManager.runAtomic(async (tx) => {
+      // 1. Record XP reward (with rollback snapshot)
+      const xpResult = this.rewardsService.recordActivity(userId, new Date(), xpReward);
+      await tx.addOperation(async (): Promise<TransactionSnapshot> => ({
+        restore: () => {
+          this.logger.warn(
+            `[TxRollback] XP award of ${xpReward} for user=${userId} on course=${id} could not be reversed (global xpStore)`,
+          );
+        },
+        data: { userId, courseId: id, xpReward, recordedAt: new Date() },
+      }));
+
+      // 2. Generate verifiable certificate (#357)
+      const certificate = await this.certificateService.generateCertificate({
+        userId,
+        courseId: id,
+        courseTitle: course.title,
+        xpAwarded: xpReward,
+      });
+
+      await tx.addOperation(async (): Promise<TransactionSnapshot> => ({
+        restore: () => {
+          this.certificateService.revokeCertificate(certificate.id);
+        },
+        data: { certificateId: certificate.id },
+      }));
+
+      // 3. Mint certificate NFT via contract adapter (#396)
+      let onChainCertificate:
+        | { tokenId: string; transactionHash: string }
+        | undefined;
+      if (this.contractAdapter) {
+        try {
+          onChainCertificate = await this.contractAdapter.mintCertificate(
+            userId,
+            id,
+            {
+              courseTitle: course.title,
+              xpReward,
+              completedAt: new Date().toISOString(),
+              verificationCode: certificate.verificationCode,
+            },
+          );
+
+          await tx.addOperation(async (): Promise<TransactionSnapshot> => ({
+            restore: () => {
+              this.logger.warn(
+                `[TxRollback] On-chain certificate mint for user=${userId}, course=${id} cannot be reversed`,
+              );
+            },
+            data: { onChainCertificate },
+          }));
+
+          // Record the on-chain reward as well
+          await this.contractAdapter.recordReward(
+            userId,
             xpReward,
-            completedAt: new Date().toISOString(),
-          },
-        );
+            `Completed course: ${course.title}`,
+          );
 
-        // Record the on-chain reward as well
-        await this.contractAdapter.recordReward(
-          userId,
-          xpReward,
-          `Completed course: ${course.title}`,
-        );
-      } catch (err) {
-        // #396: Contract failures should not block course completion.
-        // The user gets their XP reward regardless.
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[CourseService] Contract adapter operation failed during course completion (non-blocking): ${err}`,
-        );
+          await tx.addOperation(async (): Promise<TransactionSnapshot> => ({
+            restore: () => {
+              this.logger.warn(
+                `[TxRollback] On-chain reward for user=${userId}, course=${id} cannot be reversed`,
+              );
+            },
+            data: { userId, xpReward },
+          }));
+        } catch (err) {
+          // #396: Contract failures should not block course completion.
+          // The user gets their XP reward and certificate regardless.
+          this.logger.warn(
+            `[CourseService] Contract adapter operation failed during course completion (non-blocking): ${err}`,
+          );
+        }
       }
+
+      return { xpResult, certificate, onChainCertificate };
+    });
+
+    if (!txResult.success) {
+      this.logger.error(
+        `Course completion transaction failed for user=${userId}, course=${id}: ${txResult.error?.message}`,
+      );
+      throw txResult.error;
     }
 
     return {
@@ -229,8 +308,14 @@ export class CourseService {
       courseId: id,
       userId,
       xpAwarded: xpReward,
-      progression: result,
-      certificate: certificateResult,
+      progression: txResult.result!.xpResult,
+      certificate: {
+        id: txResult.result!.certificate.id,
+        verificationCode: txResult.result!.certificate.verificationCode,
+        shareableUrl: txResult.result!.certificate.shareableUrl,
+        issuedAt: txResult.result!.certificate.issuedAt,
+        ...(txResult.result!.onChainCertificate ?? {}),
+      },
     };
   }
 

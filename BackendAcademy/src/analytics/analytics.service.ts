@@ -1,8 +1,13 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { AnalyticsEvent } from './analytics.entity';
 import { RedisService } from '../redis/redis.service';
 import { v4 as uuidv4 } from 'uuid';
 import { StateReconciliationResult } from '../contracts/interfaces/contracts.interface';
+import {
+  TransactionManagerService,
+  TransactionSnapshot,
+} from '../common/transaction-manager.service';
+import { CorrelationLoggerService } from '../logging/logger.service';
 
 export enum EventType {
   USER_REGISTERED = 'user_registered',
@@ -52,7 +57,10 @@ export class AnalyticsService {
   /** #394: History of reconciliation results for analytics */
   private readonly reconciliationHistory: StateReconciliationResult[] = [];
 
-  constructor(private readonly redisService?: RedisService) {}
+  constructor(
+    private readonly redisService?: RedisService,
+    private readonly transactionManager?: TransactionManagerService,
+  ) {}
 
   validateEventPayload(event: Partial<AnalyticsEvent>): void {
     if (!event.eventType) {
@@ -80,7 +88,103 @@ export class AnalyticsService {
     }
   }
 
+  /**
+   * Track an analytics event atomically. The event is first pushed to the
+   * in-memory store, then the Redis snapshot is refreshed. If the Redis
+   * refresh fails, the event is removed from the store so callers never
+   * observe a partial side-effect.
+   *
+   * When a {@link TransactionManagerService} is available the two
+   * mutations are wrapped in a transactional atomic operation with
+   * automatic rollback semantics.
+   */
   async trackEvent(event: Partial<AnalyticsEvent>): Promise<AnalyticsEvent> {
+    if (this.transactionManager) {
+      return this.trackEventAtomically(event);
+    }
+    return this.trackEventLegacy(event);
+  }
+
+  /**
+   * Atomic variant of trackEvent (#358). Uses the transaction manager
+   * to guarantee that the event store and Redis snapshot are always
+   * in a consistent state.
+   */
+  private async trackEventAtomically(event: Partial<AnalyticsEvent>): Promise<AnalyticsEvent> {
+    const correlationId = event.properties?.correlationId
+      || CorrelationLoggerService.getCorrelationId();
+
+    const analyticsEvent = new AnalyticsEvent({
+      ...event,
+      id: event.id || uuidv4(),
+      timestamp: event.timestamp || new Date(),
+      properties: {
+        ...event.properties,
+        correlationId,
+      },
+    });
+
+    const txResult = await this.transactionManager!.runAtomic(async (tx) => {
+      // Step 1: Push event to in-memory store
+      this.events.push(analyticsEvent);
+
+      await tx.addOperation(async (): Promise<TransactionSnapshot> => ({
+        restore: () => {
+          const idx = this.events.indexOf(analyticsEvent);
+          if (idx !== -1) this.events.splice(idx, 1);
+        },
+        data: { eventId: analyticsEvent.id },
+      }));
+
+      this.logger?.log(`Event tracked: ${analyticsEvent.eventType}`, 'AnalyticsService');
+
+      // Step 2: Refresh Redis snapshot (if applicable)
+      if (this.redisService && analyticsEvent.userId) {
+        const eventTypes = [analyticsEvent.eventType];
+        const interactionData: Record<string, any> = {
+          lastInteractionAt: new Date(),
+          interactionCount: 1,
+          eventTypes,
+          correlationId,
+        };
+
+        if (analyticsEvent.eventType === EventType.COURSE_ENROLLED) {
+          interactionData.recentCourses = analyticsEvent.properties?.courseId
+            ? [analyticsEvent.properties.courseId]
+            : [];
+        }
+        if (analyticsEvent.eventType === EventType.CHALLENGE_COMPLETED) {
+          interactionData.recentChallenges = analyticsEvent.properties?.challengeId
+            ? [analyticsEvent.properties.challengeId]
+            : [];
+        }
+        if (
+          analyticsEvent.eventType === EventType.CONTRACT_RECONCILIATION_COMPLETED
+        ) {
+          interactionData.lastReconciliationAt = new Date();
+        }
+
+        await this.redisService.refreshUserSnapshot(analyticsEvent.userId, interactionData);
+      }
+
+      return analyticsEvent;
+    });
+
+    if (!txResult.success) {
+      this.logger.error(
+        `Failed to track event ${analyticsEvent.eventType}: ${txResult.error?.message}`,
+      );
+      throw txResult.error;
+    }
+
+    return txResult.result!;
+  }
+
+  /**
+   * Legacy (non-transactional) variant of trackEvent. Used as fallback
+   * when no TransactionManagerService is injected.
+   */
+  private async trackEventLegacy(event: Partial<AnalyticsEvent>): Promise<AnalyticsEvent> {
     const correlationId = event.properties?.correlationId
       || CorrelationLoggerService.getCorrelationId();
 

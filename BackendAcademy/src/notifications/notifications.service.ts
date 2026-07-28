@@ -1,5 +1,4 @@
 import { Injectable, Logger, Inject, Optional } from '@nestjs/common';
-import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Notification } from './interfaces/notifications.interface';
 import {
@@ -12,6 +11,7 @@ import {
 import { CreateNotificationDto } from './dto/create-notification.dto';
 import { NotificationPreferences } from './interfaces/preferences.interface';
 import { LocalizationService } from '../i18n/localization.service';
+import { CorrelationLoggerService } from '../logging/logger.service';
 
 /**
  * Batch configuration for low-priority notifications.
@@ -72,6 +72,15 @@ export class NotificationsService {
       titleKey: 'notification.courseCompleted',
       messageKey: 'notification.courseCompleted',
     },
+    // #357: Certificate generation notification
+    certificateGenerated: {
+      titleKey: 'notification.certificateGenerated',
+      messageKey: 'notification.certificateGenerated',
+    },
+    certificateRevoked: {
+      titleKey: 'notification.certificateRevoked',
+      messageKey: 'notification.certificateRevoked',
+    },
     submissionFlagged: {
       titleKey: 'notification.submissionFlagged',
       messageKey: 'notification.submissionFlagged',
@@ -83,6 +92,7 @@ export class NotificationsService {
     reviewResolved: {
       titleKey: 'notification.reviewResolved',
       messageKey: 'notification.reviewResolved',
+    },
     reportTriaged: {
       titleKey: 'notification.reportTriaged',
       messageKey: 'notification.reportTriaged',
@@ -94,6 +104,7 @@ export class NotificationsService {
     reportResolved: {
       titleKey: 'notification.reportResolved',
       messageKey: 'notification.reportResolved',
+    },
     contentFlagged: {
       titleKey: 'notification.contentFlagged',
       messageKey: 'notification.contentFlagged',
@@ -113,7 +124,11 @@ export class NotificationsService {
     @Optional()
     @Inject(NOTIFICATION_PROVIDERS)
     private readonly providers?: INotificationProvider[],
-  ) {}
+    @Optional()
+    private readonly configService?: ConfigService,
+  ) {
+    this.defaultTimeoutMs = this.configService?.get<number>('DEFAULT_REQUEST_TIMEOUT_MS') ?? 30_000;
+  }
 
   // ── Batch configuration (#386) ────────────────────────────
 
@@ -132,10 +147,6 @@ export class NotificationsService {
   }
 
   // ── Notification CRUD ────────────────────────────────────
-    private readonly configService?: ConfigService,
-  ) {
-    this.defaultTimeoutMs = this.configService?.get<number>('DEFAULT_REQUEST_TIMEOUT_MS') ?? 30_000;
-  }
 
   createReportNotification(reportId: string, templateName: 'reportTriaged' | 'reportEscalated' | 'reportResolved'): Notification {
     return this.createLocalized('system', templateName, 'in-app');
@@ -391,6 +402,8 @@ export class NotificationsService {
       })),
     );
     return results;
+  }
+
   /**
    * Sends an outbound push notification with a global request timeout — Issue #408.
    */
@@ -426,6 +439,8 @@ export class NotificationsService {
       clearTimeout(timer);
     }
   }
+
+  /**
    * Notifies a user that a signed asset URL is about to expire.
    */
   notifySignedUrlExpiring(
