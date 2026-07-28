@@ -8,13 +8,16 @@
     "start": "node dist/main",
     "start:dev": "nest start --watch",
     "lint": "eslint \"{src,test}/**/*.ts\"",
-    "test": "jest"
+    "test": "jest --config jest.config.ts",
+    "test:ci": "NODE_ENV=test jest --config jest.config.ts --runInBand"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.22",
+    "@nestjs/config": "^3.3.0",
     "@nestjs/core": "^10.0.0",
     "@nestjs/platform-express": "^10.0.0",
     "@nestjs/throttler": "^6.5.0",
+    "joi": "^18.0.2",
     "reflect-metadata": "^0.1.13",
     "rxjs": "^7.8.1",
     "winston": "^3.19.0"
