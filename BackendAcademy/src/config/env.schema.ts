@@ -36,6 +36,17 @@ export const baseEnvSchema = Joi.object({
  * with contract-specific and feature-flag constraints.
  */
 export const contractEnvSchema = Joi.object({
+  // ── Certificate configuration (#357) ──────────────────────────────
+  /** Base URL for certificate verification and sharing */
+  CERTIFICATE_BASE_URL: Joi.string()
+    .uri()
+    .default('https://rustacademy.xyz/certificates')
+    .description(
+      'Base URL used to construct shareable certificate verification ' +
+        'links. Each certificate gets a URL in the form ' +
+        '{CERTIFICATE_BASE_URL}/verify/{code}.',
+    ),
+
   // ── Feature flags for contract ingestion ──────────────────────────
   /** Explicitly enables the contract ingestion pipeline */
   CONTRACT_INGESTION_ENABLED: Joi.string()
@@ -154,6 +165,7 @@ export type JobEnvConfig = {
 };
 
 export type ContractEnvConfig = {
+  CERTIFICATE_BASE_URL: string;
   CONTRACT_INGESTION_ENABLED: string;
   CONTRACT_REGISTRY_REQUIRE_SCHEMA: string;
   CONTRACT_EVENT_REPLAY_ENABLED: string;

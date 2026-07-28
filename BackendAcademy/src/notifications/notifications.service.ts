@@ -1,4 +1,5 @@
 import { Injectable, Logger, Inject, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Notification } from './interfaces/notifications.interface';
 import {
   INotificationProvider,
@@ -10,6 +11,7 @@ import {
 import { CreateNotificationDto } from './dto/create-notification.dto';
 import { NotificationPreferences } from './interfaces/preferences.interface';
 import { LocalizationService } from '../i18n/localization.service';
+import { CorrelationLoggerService } from '../logging/logger.service';
 
 /**
  * Batch configuration for low-priority notifications.
@@ -70,6 +72,15 @@ export class NotificationsService {
       titleKey: 'notification.courseCompleted',
       messageKey: 'notification.courseCompleted',
     },
+    // #357: Certificate generation notification
+    certificateGenerated: {
+      titleKey: 'notification.certificateGenerated',
+      messageKey: 'notification.certificateGenerated',
+    },
+    certificateRevoked: {
+      titleKey: 'notification.certificateRevoked',
+      messageKey: 'notification.certificateRevoked',
+    },
     submissionFlagged: {
       titleKey: 'notification.submissionFlagged',
       messageKey: 'notification.submissionFlagged',
@@ -81,6 +92,7 @@ export class NotificationsService {
     reviewResolved: {
       titleKey: 'notification.reviewResolved',
       messageKey: 'notification.reviewResolved',
+    },
     reportTriaged: {
       titleKey: 'notification.reportTriaged',
       messageKey: 'notification.reportTriaged',
@@ -92,6 +104,7 @@ export class NotificationsService {
     reportResolved: {
       titleKey: 'notification.reportResolved',
       messageKey: 'notification.reportResolved',
+    },
     contentFlagged: {
       titleKey: 'notification.contentFlagged',
       messageKey: 'notification.contentFlagged',
