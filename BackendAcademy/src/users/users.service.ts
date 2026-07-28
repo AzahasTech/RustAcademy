@@ -139,6 +139,8 @@ export class UsersService {
    *
    * Ensures no orphaned onboarding progress, analytics events, or
    * social activity is left behind after account deletion.
+  /**
+   * Records an asset upload against a user for ownership tracking.
    */
   async deleteAccount(userId: string): Promise<AccountDeletionResult> {
     this.logger.warn(`Cascade deleting account for user ${userId}`);
