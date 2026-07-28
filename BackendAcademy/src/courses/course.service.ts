@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { Injectable, ConflictException, NotFoundException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { CourseEntity } from './course.entity';
@@ -29,6 +29,12 @@ import { IContractAdapter } from '../contracts';
 @Injectable()
 export class CourseService {
   private static readonly INITIAL_VERSION = 1;
+
+  /** #356: In-flight enrollment locks to prevent duplicate subscriptions. */
+  private readonly enrollmentLocks = new Set<string>();
+
+  /** #356: Active enrollments: key = "userId:courseId". */
+  private readonly enrollments = new Map<string, EnrollmentRecord>();
 
   constructor(
     @InjectRepository(CourseEntity)
@@ -303,4 +309,101 @@ export class CourseService {
     }
     return course;
   }
+
+  // ──────────────────────────────────────────────────────────────────
+  // #356: Enrollment with concurrency protection
+  // ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Enrolls a user in a course with protection against concurrent
+   * duplicate subscriptions. Uses an in-flight lock to prevent
+   * race conditions when parallel requests arrive for the same
+   * userId + courseId pair.
+   *
+   * @throws ConflictException if the user is already enrolled or
+   *   another enrollment request is in progress.
+   */
+  async enrollUser(
+    userId: string,
+    courseId: string,
+  ): Promise<EnrollmentRecord> {
+    const lockKey = `${userId}:${courseId}`;
+
+    // Check if already enrolled
+    const existing = this.enrollments.get(lockKey);
+    if (existing && existing.status !== 'dropped') {
+      throw new ConflictException({
+        error: 'ALREADY_ENROLLED',
+        message: `User ${userId} is already enrolled in course ${courseId}`,
+      });
+    }
+
+    // Acquire in-flight lock to prevent concurrent duplicate subscriptions
+    if (this.enrollmentLocks.has(lockKey)) {
+      throw new ConflictException({
+        error: 'ENROLLMENT_IN_PROGRESS',
+        message: `An enrollment request for user ${userId} in course ${courseId} is already being processed`,
+      });
+    }
+
+    this.enrollmentLocks.add(lockKey);
+
+    try {
+      // Re-check after acquiring lock (double-check pattern)
+      const recheck = this.enrollments.get(lockKey);
+      if (recheck && recheck.status !== 'dropped') {
+        throw new ConflictException({
+          error: 'ALREADY_ENROLLED',
+          message: `User ${userId} is already enrolled in course ${courseId}`,
+        });
+      }
+
+      const enrollment: EnrollmentRecord = {
+        id: crypto.randomUUID(),
+        userId,
+        courseId,
+        enrolledAt: new Date(),
+        status: 'active',
+        completedAt: null,
+        progressPercent: 0,
+      };
+
+      this.enrollments.set(lockKey, enrollment);
+      return enrollment;
+    } finally {
+      this.enrollmentLocks.delete(lockKey);
+    }
+  }
+
+  /**
+   * Returns enrollment status for a user in a specific course.
+   */
+  getEnrollment(
+    userId: string,
+    courseId: string,
+  ): EnrollmentRecord | undefined {
+    return this.enrollments.get(`${userId}:${courseId}`);
+  }
+
+  /**
+   * Returns all enrollments for a user across all courses.
+   */
+  getUserEnrollments(userId: string): EnrollmentRecord[] {
+    return Array.from(this.enrollments.values()).filter(
+      (e) => e.userId === userId,
+    );
+  }
+}
+
+/**
+ * #356: Typed enrollment record for the concurrency-safe enrollment system.
+ */
+interface EnrollmentRecord {
+  id: string;
+  userId: string;
+  courseId: string;
+  enrolledAt: Date;
+  status: 'active' | 'completed' | 'dropped';
+  completedAt: Date | null;
+  progressPercent: number;
 }

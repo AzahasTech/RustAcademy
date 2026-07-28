@@ -124,6 +124,35 @@ export const contractEnvSchema = Joi.object({
 /**
  * Type derived from the contract env schema validation.
  */
+export const jobEnvSchema = Joi.object({
+  MAX_JOB_RETRIES: Joi.number().integer().min(0).max(10).default(3)
+    .description('Maximum number of retries for background jobs before sending to DLQ'),
+
+  JOB_RETRY_DELAY_MS: Joi.number().integer().min(100).default(5000)
+    .description('Delay in milliseconds between job retries'),
+
+  DLQ_TTL_SECONDS: Joi.number().integer().min(60).default(604800)
+    .description('TTL in seconds for dead-letter queue records (default: 7 days)'),
+
+  EXPORT_NOTIFICATION_ENABLED: Joi.boolean().default(true)
+    .description('Enable email notifications when exports/reports are ready'),
+
+  EXPORT_RETRY_MAX: Joi.number().integer().min(0).max(10).default(3)
+    .description('Maximum retry attempts for export generation jobs'),
+
+  SIGNED_URL_TTL_SECONDS: Joi.number().integer().min(60).max(86400).default(3600)
+    .description('TTL in seconds for signed download URLs (default: 1 hour)'),
+});
+
+export type JobEnvConfig = {
+  MAX_JOB_RETRIES: number;
+  JOB_RETRY_DELAY_MS: number;
+  DLQ_TTL_SECONDS: number;
+  EXPORT_NOTIFICATION_ENABLED: boolean;
+  EXPORT_RETRY_MAX: number;
+  SIGNED_URL_TTL_SECONDS: number;
+};
+
 export type ContractEnvConfig = {
   CONTRACT_INGESTION_ENABLED: string;
   CONTRACT_REGISTRY_REQUIRE_SCHEMA: string;
@@ -158,6 +187,10 @@ export function isFeatureExplicitlyDisabled(value: string | undefined): boolean 
  * Environment variables for notification delivery and preferences (#385).
  */
 export const notificationEnvSchema = Joi.object({
+ * Environment variables for notification delivery and preferences.
+ */
+export const notificationEnvSchema = Joi.object({
+  /** When "true", user notification preferences are enforced before delivery */
   NOTIFICATION_ENFORCE_PREFERENCES: Joi.string()
     .valid('true', 'false')
     .default('true')
@@ -177,4 +210,48 @@ export const notificationEnvSchema = Joi.object({
  */
 export const validationSchema = baseEnvSchema
   .concat(contractEnvSchema)
+ * Environment variables for migration safety and ordering.
+ */
+export const migrationEnvSchema = Joi.object({
+  /** Timeout in milliseconds for acquiring a migration lock */
+  MIGRATION_LOCK_TIMEOUT: Joi.number()
+    .integer()
+    .min(1000)
+    .default(300_000)
+    .description('Timeout in ms for acquiring a migration lock (default 5 min).'),
+
+  /** Maximum number of retry attempts for failed migrations */
+  MIGRATION_RETRY_ATTEMPTS: Joi.number()
+    .integer()
+    .min(0)
+    .max(10)
+    .default(3)
+    .description('Maximum retry attempts for failed migrations.'),
+
+  /** When true, strict ordering is enforced and migrations out of order are rejected */
+  MIGRATION_STRICT_ORDERING: Joi.string()
+    .valid('true', 'false')
+    .default('true')
+    .description(
+      'When "true", migrations must be applied strictly in dependency order. ' +
+        'Any ordering violation blocks migration execution.',
+    ),
+
+  /** When true, a preflight check is required before any migration can run */
+  MIGRATION_REQUIRE_PREFLIGHT: Joi.string()
+    .valid('true', 'false')
+    .default('true')
+    .description(
+      'When "true", preflight validation must pass before migrations execute.',
+    ),
+});
+
+/**
+ * Combined validation schema that includes base, contract, migration,
+ * and notification environment variables.
+ * Used by config.module.ts to validate all env vars at startup.
+ */
+export const validationSchema = baseEnvSchema
+  .concat(contractEnvSchema)
+  .concat(migrationEnvSchema)
   .concat(notificationEnvSchema);

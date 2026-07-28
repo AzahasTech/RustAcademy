@@ -13,7 +13,9 @@
     "migration:preflight": "ts-node -r tsconfig-paths/register src/database/migration-cli.ts preflight",
     "migration:rollback": "ts-node -r tsconfig-paths/register src/database/migration-cli.ts rollback",
     "migration:history": "ts-node -r tsconfig-paths/register src/database/migration-cli.ts history",
-    "migration:dry-run": "ts-node -r tsconfig-paths/register src/database/migration-cli.ts dry-run"
+    "migration:dry-run": "ts-node -r tsconfig-paths/register src/database/migration-cli.ts dry-run",
+    "migration:validate": "ts-node -r tsconfig-paths/register src/database/migration-cli.ts validate",
+    "migration:status": "ts-node -r tsconfig-paths/register src/database/migration-cli.ts status"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.22",
