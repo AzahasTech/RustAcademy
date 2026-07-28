@@ -98,6 +98,35 @@ export const contractEnvSchema = Joi.object({
 /**
  * Type derived from the contract env schema validation.
  */
+export const jobEnvSchema = Joi.object({
+  MAX_JOB_RETRIES: Joi.number().integer().min(0).max(10).default(3)
+    .description('Maximum number of retries for background jobs before sending to DLQ'),
+
+  JOB_RETRY_DELAY_MS: Joi.number().integer().min(100).default(5000)
+    .description('Delay in milliseconds between job retries'),
+
+  DLQ_TTL_SECONDS: Joi.number().integer().min(60).default(604800)
+    .description('TTL in seconds for dead-letter queue records (default: 7 days)'),
+
+  EXPORT_NOTIFICATION_ENABLED: Joi.boolean().default(true)
+    .description('Enable email notifications when exports/reports are ready'),
+
+  EXPORT_RETRY_MAX: Joi.number().integer().min(0).max(10).default(3)
+    .description('Maximum retry attempts for export generation jobs'),
+
+  SIGNED_URL_TTL_SECONDS: Joi.number().integer().min(60).max(86400).default(3600)
+    .description('TTL in seconds for signed download URLs (default: 1 hour)'),
+});
+
+export type JobEnvConfig = {
+  MAX_JOB_RETRIES: number;
+  JOB_RETRY_DELAY_MS: number;
+  DLQ_TTL_SECONDS: number;
+  EXPORT_NOTIFICATION_ENABLED: boolean;
+  EXPORT_RETRY_MAX: number;
+  SIGNED_URL_TTL_SECONDS: number;
+};
+
 export type ContractEnvConfig = {
   CONTRACT_INGESTION_ENABLED: string;
   CONTRACT_REGISTRY_REQUIRE_SCHEMA: string;
