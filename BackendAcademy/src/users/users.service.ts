@@ -109,6 +109,7 @@ export class UsersService {
       avatarUrl:
         (prefs?.learnerPreferences?.['avatarUrl'] as string) || undefined,
     };
+  /**
    * Records an asset upload against a user for ownership tracking.
    */
   recordAssetUpload(userId: string, assetId: string): void {
