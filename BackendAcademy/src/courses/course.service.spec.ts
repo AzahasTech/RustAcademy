@@ -114,6 +114,8 @@ describe('CourseService', () => {
   let courseRepo: InMemoryCourseRepo;
   let revisionRepo: InMemoryRevisionRepo;
   let rewardsService: RewardsService;
+  let searchIndexer: { indexCourse: jest.Mock; removeCourse: jest.Mock };
+  let redisService: { invalidateContentCache: jest.Mock };
 
   beforeEach(() => {
     courseRepo = new InMemoryCourseRepo();
@@ -121,10 +123,22 @@ describe('CourseService', () => {
     rewardsService = {
       recordActivity: jest.fn(),
     } as unknown as RewardsService;
+    searchIndexer = {
+      indexCourse: jest.fn(),
+      removeCourse: jest.fn(),
+    };
+    redisService = {
+      invalidateContentCache: jest.fn().mockResolvedValue(0),
+    };
     service = new CourseService(
       courseRepo as unknown as import('typeorm').Repository<CourseEntity>,
       revisionRepo as unknown as import('typeorm').Repository<CourseRevisionEntity>,
       rewardsService,
+      undefined as any,
+      undefined as any,
+      undefined,
+      searchIndexer as any,
+      redisService as any,
     );
   });
 

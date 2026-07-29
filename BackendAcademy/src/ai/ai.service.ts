@@ -17,10 +17,12 @@ import {
 } from './interfaces/ai.interface';
 import { PreScoreResult } from './interfaces/pre-score.interface';
 import { AiProvider } from './interfaces/ai-provider.interface';
+import { PromptTemplateService } from './prompt-template.service';
 import { v4 as uuidv4 } from 'uuid';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { RedisService } from '../redis/redis.service';
 import { MonitoringService } from '../monitoring/monitoring.service';
+import { SecurityService } from '../security/security.service';
 
 export const AI_PROVIDER = 'AI_PROVIDER';
 
@@ -36,6 +38,7 @@ export class AiService {
   private chatRecords: Map<string, AiChatRecord> = new Map();
   private hints: Map<string, Hint[]> = new Map();
   private readonly defaultTimeoutMs: number;
+  private readonly maxChatHistoryLength: number;
 
   constructor(
     @Optional() @Inject(AI_PROVIDER) private aiProvider?: AiProvider,
@@ -43,8 +46,11 @@ export class AiService {
     private readonly analyticsService?: AnalyticsService,
     private readonly redisService?: RedisService,
     private readonly monitoringService?: MonitoringService,
+    @Optional() private readonly promptTemplateService?: PromptTemplateService,
+    @Optional() private readonly securityService?: SecurityService,
   ) {
     this.defaultTimeoutMs = this.configService?.get<number>('DEFAULT_REQUEST_TIMEOUT_MS') ?? 30_000;
+    this.maxChatHistoryLength = this.configService?.get<number>('AI_MAX_CHAT_HISTORY_LENGTH') ?? 50;
     this.initializeSampleHints();
 
     // Surface missing optional dependencies loudly instead of failing silently.
@@ -112,6 +118,42 @@ export class AiService {
     const { message, userId, context } = createChatRequestDto;
 
     const response = await this.generateChatResponse(message);
+    // #374: Use versioned prompt template from configuration
+    const systemPrompt = this.promptTemplateService
+      ? this.promptTemplateService.getSystemPrompt('chat_tutor', {
+          version: this.configService?.get<string>('AI_PROMPT_TEMPLATE_VERSION'),
+        })
+      : 'You are a helpful Rust programming tutor.';
+
+    const response = this.aiProvider
+      ? await this.aiProvider.generateChatCompletion({
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: message },
+          ],
+        })
+      : this.fallbackResponse(message);
+    // Issue #371: sanitise user-supplied prompts before they reach the AI
+    // provider. When SecurityService is wired in, prompts containing known
+    // prompt-injection patterns are either wrapped in a hard system-pinned
+    // boundary or rejected outright. Without SecurityService we degrade
+    // gracefully (the previous behaviour) so unit tests keep working.
+    const sanitisation = this.securityService
+      ? this.securityService.sanitisePrompt(message)
+      : null;
+
+    const effectiveMessage = sanitisation?.sanitised ?? message;
+
+    const response = sanitisation?.status === 'rejected'
+      ? sanitisation.sanitised
+      : this.aiProvider
+        ? await this.aiProvider.generateChatCompletion({
+            messages: [
+              { role: 'system', content: 'You are a helpful Rust programming tutor.' },
+              { role: 'user', content: effectiveMessage },
+            ],
+          })
+        : this.fallbackResponse(effectiveMessage);
 
     const chatMessage: ChatMessage = {
       id: uuidv4(),
@@ -120,6 +162,7 @@ export class AiService {
       response,
       timestamp: new Date(),
       context,
+      isComplete: true,
     };
 
     this.appendChatHistory(userId, chatMessage);
@@ -134,6 +177,19 @@ export class AiService {
       createdAt: chatMessage.timestamp,
     } as AiChatRecord);
 
+    // #372: Auto-summarise when history exceeds threshold
+    await this.autoSummarize(userId);
+
+    // Track prompt template version in metrics (#374)
+    if (this.monitoringService) {
+      const templateVersion =
+        this.configService?.get<string>('AI_PROMPT_TEMPLATE_VERSION') ?? '1.0.0';
+      this.monitoringService.incrementCounter('ai_prompt_template_used', 1, {
+        version: templateVersion,
+        template: 'chat_tutor',
+      });
+    }
+
     if (this.redisService) {
       await this.redisService.refreshUserSnapshot(userId, {
         lastInteractionAt: new Date(),
@@ -146,6 +202,16 @@ export class AiService {
       response: chatMessage.response,
       timestamp: chatMessage.timestamp,
       messageId: chatMessage.id,
+      // Surface the sanitisation outcome so callers can audit unsafe inputs.
+      ...(sanitisation && sanitisation.status !== 'safe'
+        ? {
+            safety: {
+              status: sanitisation.status,
+              reasons: sanitisation.reasons,
+              originalLength: sanitisation.originalLength,
+            },
+          }
+        : {}),
     };
   }
 
@@ -294,8 +360,154 @@ export class AiService {
     };
   }
 
+  // ──────────────────────────────────────────────────────────────────
+  // Chat history management (#372, #373)
+  // ──────────────────────────────────────────────────────────────────
+
   async getChatHistory(userId: string): Promise<ChatMessage[]> {
     return this.chatHistory.get(userId) || [];
+  }
+
+  /**
+   * #373: Marks a message as incomplete when a chat streaming disconnect
+   * leaves a partial response in state. Incomplete messages can be cleaned
+   * up or shown to the user with a warning.
+   */
+  markMessageIncomplete(userId: string, messageId: string): boolean {
+    const history = this.chatHistory.get(userId);
+    if (!history) return false;
+
+    const msg = history.find((m) => m.id === messageId);
+    if (!msg) return false;
+
+    msg.isComplete = false;
+
+    if (this.monitoringService) {
+      this.monitoringService.incrementCounter('chat_streaming_disconnects', 1, {
+        userId,
+        messageId,
+      });
+    }
+
+    this.logger.warn(
+      `Message ${messageId} for user ${userId} marked incomplete due to streaming disconnect`,
+    );
+    return true;
+  }
+
+  /**
+   * #373: Removes all incomplete messages from a user's chat history,
+   * preventing partial responses from persisting in conversation state.
+   */
+  cleanupIncompleteMessages(userId: string): number {
+    const history = this.chatHistory.get(userId);
+    if (!history) return 0;
+
+    const incompleteCount = history.filter((m) => !m.isComplete).length;
+    const cleaned = history.filter((m) => m.isComplete);
+    this.chatHistory.set(userId, cleaned);
+
+    if (incompleteCount > 0) {
+      this.logger.log(
+        `Cleaned up ${incompleteCount} incomplete messages for user ${userId}`,
+      );
+      if (this.monitoringService) {
+        this.monitoringService.incrementCounter(
+          'chat_incomplete_messages_cleaned',
+          incompleteCount,
+          { userId },
+        );
+      }
+    }
+    return incompleteCount;
+  }
+
+  /**
+   * #372: Automatically generates a conversation summary when chat history
+   * exceeds the configured maxChatHistoryLength. Older messages are compacted
+   * into a summary string to keep token usage under control during long
+   * tutoring sessions.
+   */
+  private async autoSummarize(userId: string): Promise<void> {
+    const history = this.chatHistory.get(userId);
+    if (!history || history.length <= this.maxChatHistoryLength) return;
+
+    const excess = history.length - this.maxChatHistoryLength;
+    const olderMessages = history.slice(0, excess);
+    const recentMessages = history.slice(excess);
+
+    // Build a compact summary from older messages
+    const topicSummary = this.buildConversationSummary(olderMessages);
+
+    // Store the summary on the most relevant chat record or create one
+    const existingRecord = Array.from(this.chatRecords.values()).find(
+      (r) => r.userId === userId,
+    );
+
+    const summaryText = `[Conversation summary — ${new Date().toISOString()}]: ${topicSummary}`;
+
+    if (existingRecord) {
+      existingRecord.summary = existingRecord.summary
+        ? `${existingRecord.summary}\n${summaryText}`
+        : summaryText;
+      existingRecord.lastSummaryAt = new Date();
+    } else {
+      const newRecord: AiChatRecord = {
+        id: uuidv4(),
+        userId,
+        sessionId: `session-${Date.now()}`,
+        messages: recentMessages,
+        startedAt: olderMessages[0]?.timestamp ?? new Date(),
+        lastActivityAt: new Date(),
+        summary: summaryText,
+        lastSummaryAt: new Date(),
+      };
+      this.chatRecords.set(newRecord.id, newRecord);
+    }
+
+    // Keep only the most recent messages in active history
+    this.chatHistory.set(userId, recentMessages);
+
+    if (this.monitoringService) {
+      this.monitoringService.incrementCounter('chat_summary_generated', 1, {
+        userId,
+        compactedCount: String(excess),
+      });
+    }
+
+    this.logger.log(
+      `Auto-summarised ${excess} messages for user ${userId} (${recentMessages.length} retained)`,
+    );
+  }
+
+  /**
+   * #372: Builds a compact conversation summary from a list of chat messages.
+   * Extracts key topics and user questions without storing the full text.
+   */
+  private buildConversationSummary(messages: ChatMessage[]): string {
+    if (messages.length === 0) return 'No prior conversation.';
+
+    const userMessages = messages
+      .filter((m) => m.message && m.message.trim().length > 0)
+      .map((m) => m.message.slice(0, 120));
+
+    if (userMessages.length === 0) return `${messages.length} interactions.`;
+
+    const topics = userMessages.slice(0, 10).join('; ');
+    const topicPreview =
+      topics.length > 500 ? topics.slice(0, 500) + '...' : topics;
+
+    return `${messages.length} messages covering: ${topicPreview}`;
+  }
+
+  /**
+   * #372: Returns the current conversation summary for a user, if one exists.
+   */
+  getConversationSummary(userId: string): string | null {
+    const record = Array.from(this.chatRecords.values()).find(
+      (r) => r.userId === userId,
+    );
+    return record?.summary ?? null;
   }
 
   getChatRecord(sessionId: string): AiChatRecord | null {
