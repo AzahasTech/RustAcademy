@@ -16,6 +16,78 @@ export const envSchema = Joi.object({
     .optional()
     .description('Database connection URL'),
 
+  // ── AI Prompt Templates (#374) ─────────────────────────────
+  /** Version identifier for the active chat prompt template set */
+  AI_PROMPT_TEMPLATE_VERSION: Joi.string()
+    .pattern(/^\d+\.\d+\.\d+$/)
+    .default('1.0.0')
+    .description(
+      'Semantic version of the chat prompt template set. ' +
+        'Changing this allows controlled rollout of new prompt designs.',
+    ),
+  /** Maximum number of messages retained in chat history before summarisation (#372) */
+  AI_MAX_CHAT_HISTORY_LENGTH: Joi.number()
+    .integer()
+    .min(10)
+    .max(500)
+    .default(50)
+    .description(
+      'When chat history exceeds this length, older messages are ' +
+        'compacted into a conversation summary to control token usage.',
+    ),
+  /** Path to prompt template configuration file (#374) */
+  AI_PROMPT_TEMPLATE_PATH: Joi.string()
+    .default('config/prompt-templates.json')
+    .description('Path to the versioned prompt template configuration file.'),
+
+  // ── Cron schedules ──────────────────────────────────────────
+  CRON_CLEANUP_SCHEDULE: Joi.string().default('0 0 * * *'),
+  CRON_ANALYTICS_SCHEDULE: Joi.string().default('0 */6 * * *'),
+  CRON_NOTIFICATIONS_SCHEDULE: Joi.string().default('*/30 * * * *'),
+  CRON_CONTRACT_REPLAY_SCHEDULE: Joi.string().optional(),
+});
+
+/**
+ * Environment variable schema that enforces explicit feature flags
+ * for contract ingestion and processing.
+ */
+export const contractEnvSchema = Joi.object({
+  CERTIFICATE_BASE_URL: Joi.string()
+    .uri()
+    .default('https://rustacademy.xyz/certificates')
+    .description('Base URL used to construct shareable certificate verification links.'),
+
+  CONTRACT_INGESTION_ENABLED: Joi.string()
+    .valid('true', 'false')
+    .default('false')
+    .description('Must be explicitly "true" to enable contract ingestion.'),
+
+  CONTRACT_REGISTRY_REQUIRE_SCHEMA: Joi.string()
+    .valid('true', 'false')
+    .default('true')
+    .description('When "true", contract registry entries must pass schema compatibility validation.'),
+
+  CONTRACT_EVENT_REPLAY_ENABLED: Joi.string()
+    .valid('true', 'false')
+    .default('false')
+    .description('When "true", contract event replay endpoints are available.'),
+
+  CONTRACT_ADAPTER_MODE: Joi.string()
+    .valid('native', 'stellar', 'mock')
+    .default('mock')
+    .description('Determines which contract adapter implementation is used.'),
+
+  CONTRACT_NETWORK: Joi.string()
+    .valid('testnet', 'futurenet', 'mainnet')
+    .default('testnet')
+    .description('Stellar network target for contract deployments.'),
+
+  STELLAR_HORIZON_URL: Joi.string()
+    .uri()
+    .optional()
+    .description('Stellar Horizon server URL for contract queries.'),
+
+  CONTRACT_REGISTRY_MAX_ENTRIES: Joi.number()
   REDIS_HOST: Joi.string()
     .default('localhost')
     .description('Redis host used for caching and background jobs'),
@@ -57,6 +129,12 @@ export const envSchema = Joi.object({
     .default(5_000)
     .description('Timeout for readiness probe dependency checks in milliseconds.'),
 
+  CONTRACT_SCHEMA_VERSION: Joi.string()
+    .pattern(/^\d+\.\d+\.\d+$/)
+    .default('1.0.0')
+    .description('Minimum required contract schema version.'),
+
+  CONTRACT_REPLAY_MAX_EVENTS: Joi.number()
   // ── Task orchestrator configuration — Issue #364 ────────────────
   /** Maximum retries for task orchestration */
   TASK_ORCHESTRATOR_MAX_RETRIES: Joi.number()
@@ -72,6 +150,7 @@ export const envSchema = Joi.object({
     .default(1_000)
     .description('Base backoff time in milliseconds before task retries.'),
 
+  CONTRACT_EVENT_RETENTION_DAYS: Joi.number()
   /** Maximum backoff time in milliseconds for task retries */
   TASK_ORCHESTRATOR_MAX_BACKOFF_MS: Joi.number()
     .integer()
@@ -80,27 +159,13 @@ export const envSchema = Joi.object({
     .description('Maximum backoff time in milliseconds for task retries.'),
 });
 
-/**
- * Type derived from the contract env schema validation.
- */
 export const jobEnvSchema = Joi.object({
-  MAX_JOB_RETRIES: Joi.number().integer().min(0).max(10).default(3)
-    .description('Maximum number of retries for background jobs before sending to DLQ'),
-
-  JOB_RETRY_DELAY_MS: Joi.number().integer().min(100).default(5000)
-    .description('Delay in milliseconds between job retries'),
-
-  DLQ_TTL_SECONDS: Joi.number().integer().min(60).default(604800)
-    .description('TTL in seconds for dead-letter queue records (default: 7 days)'),
-
-  EXPORT_NOTIFICATION_ENABLED: Joi.boolean().default(true)
-    .description('Enable email notifications when exports/reports are ready'),
-
-  EXPORT_RETRY_MAX: Joi.number().integer().min(0).max(10).default(3)
-    .description('Maximum retry attempts for export generation jobs'),
-
-  SIGNED_URL_TTL_SECONDS: Joi.number().integer().min(60).max(86400).default(3600)
-    .description('TTL in seconds for signed download URLs (default: 1 hour)'),
+  MAX_JOB_RETRIES: Joi.number().integer().min(0).max(10).default(3),
+  JOB_RETRY_DELAY_MS: Joi.number().integer().min(100).default(5000),
+  DLQ_TTL_SECONDS: Joi.number().integer().min(60).default(604800),
+  EXPORT_NOTIFICATION_ENABLED: Joi.boolean().default(true),
+  EXPORT_RETRY_MAX: Joi.number().integer().min(0).max(10).default(3),
+  SIGNED_URL_TTL_SECONDS: Joi.number().integer().min(60).max(86400).default(3600),
 });
 
 export type JobEnvConfig = {
@@ -133,19 +198,10 @@ export type ContractEnvConfig = {
   TASK_ORCHESTRATOR_MAX_BACKOFF_MS: number;
 };
 
-/**
- * Resolves whether a feature flag string is explicitly enabled.
- * Only the literal string "true" qualifies as enabled.
- */
 export function isFeatureEnabled(value: string | undefined): boolean {
   return value === 'true';
 }
 
-/**
- * Resolves whether a feature flag string is explicitly disabled.
- * Only the literal string "false" qualifies as explicitly disabled.
- * Any other value (or absence) is considered misconfigured.
- */
 export function isFeatureExplicitlyDisabled(value: string | undefined): boolean {
   return value === 'false';
 }
@@ -154,10 +210,6 @@ export function isFeatureExplicitlyDisabled(value: string | undefined): boolean 
  * Environment variables for notification delivery and preferences (#385).
  */
 export const notificationEnvSchema = Joi.object({
- * Environment variables for notification delivery and preferences.
- */
-export const notificationEnvSchema = Joi.object({
-  /** When "true", user notification preferences are enforced before delivery */
   NOTIFICATION_ENFORCE_PREFERENCES: Joi.string()
     .valid('true', 'false')
     .default('true')
@@ -172,22 +224,15 @@ export const notificationEnvSchema = Joi.object({
 });
 
 /**
- * Combined validation schema that includes contract and notification
- * environment variables. Used by config.module.ts at startup.
- */
-export const validationSchema = baseEnvSchema
-  .concat(contractEnvSchema)
- * Environment variables for migration safety and ordering.
+ * Environment variables for migration safety and ordering (#397).
  */
 export const migrationEnvSchema = Joi.object({
-  /** Timeout in milliseconds for acquiring a migration lock */
   MIGRATION_LOCK_TIMEOUT: Joi.number()
     .integer()
     .min(1000)
     .default(300_000)
     .description('Timeout in ms for acquiring a migration lock (default 5 min).'),
 
-  /** Maximum number of retry attempts for failed migrations */
   MIGRATION_RETRY_ATTEMPTS: Joi.number()
     .integer()
     .min(0)
@@ -195,22 +240,17 @@ export const migrationEnvSchema = Joi.object({
     .default(3)
     .description('Maximum retry attempts for failed migrations.'),
 
-  /** When true, strict ordering is enforced and migrations out of order are rejected */
   MIGRATION_STRICT_ORDERING: Joi.string()
     .valid('true', 'false')
     .default('true')
     .description(
-      'When "true", migrations must be applied strictly in dependency order. ' +
-        'Any ordering violation blocks migration execution.',
+      'When "true", migrations must be applied strictly in dependency order.',
     ),
 
-  /** When true, a preflight check is required before any migration can run */
   MIGRATION_REQUIRE_PREFLIGHT: Joi.string()
     .valid('true', 'false')
     .default('true')
-    .description(
-      'When "true", preflight validation must pass before migrations execute.',
-    ),
+    .description('When "true", preflight validation must pass before migrations execute.'),
 });
 
 /**
