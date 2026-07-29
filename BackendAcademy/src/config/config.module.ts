@@ -1,7 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule as NestConfigModule } from '@nestjs/config';
-import * as Joi from 'joi';
-import { validationSchema } from './env.schema';
+import { envSchema } from './env.schema';
 
 /**
  * Application config module with contract-specific environment
@@ -11,17 +10,7 @@ import { validationSchema } from './env.schema';
   imports: [
     NestConfigModule.forRoot({
       isGlobal: true,
-      validationSchema,
-      cache: true,
-      envFilePath: ['.env.local', '.env'],
-      expandVariables: true,
-      validationOptions: {
-        // Report every invalid variable at once and coerce string env
-        // values to their declared types (numbers, booleans, lists, JSON).
-        abortEarly: false,
-        allowUnknown: true,
-        convert: true,
-      },
+      validationSchema: envSchema,
     }),
   ],
   exports: [NestConfigModule],
