@@ -170,6 +170,25 @@ export class RedisService {
     statusCode?: number;
   }>> {
     return this.webhookDeliveryLog.get(webhookId) || [];
+  }
+
+  // ---------------------------------------------------------------------------
+  // Health check — Issue #375
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Returns true when the Redis service reports healthy (cache is accessible).
+   * A no-op get is sufficient to validate connectivity and measure latency.
+   */
+  async isHealthy(): Promise<boolean> {
+    try {
+      await this.get('__health_check__');
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async warmCache(keys: string[], fetchFn: (key: string) => Promise<unknown>, ttlMs?: number): Promise<number> {
     let warmed = 0;
     for (const key of keys) {

@@ -93,6 +93,58 @@ export const contractEnvSchema = Joi.object({
     .max(365)
     .default(90)
     .description('Number of days to retain contract event logs for replay.'),
+
+  // ── Attachment scanning configuration — Issue #365 ──────────────
+  /** Maximum allowed attachment file size in bytes */
+  MAX_ATTACHMENT_SIZE_BYTES: Joi.number()
+    .integer()
+    .min(1)
+    .default(10_485_760)
+    .description('Maximum allowed attachment file size in bytes (default: 10 MB).'),
+
+  /** Comma-separated list of allowed MIME types for attachments */
+  ALLOWED_ATTACHMENT_TYPES: Joi.string()
+    .optional()
+    .description(
+      'Comma-separated list of allowed MIME types for submission attachments. ' +
+        'Example: "application/pdf,image/png,text/plain"',
+    ),
+
+  /** Whether attachment content policy scanning is enabled */
+  ATTACHMENT_SCANNING_ENABLED: Joi.string()
+    .valid('true', 'false')
+    .default('true')
+    .description('When "true", submission attachments are scanned for policy violations.'),
+
+  // ── Readiness probe configuration — Issue #376 ──────────────────
+  /** Timeout for readiness probe checks in milliseconds */
+  READINESS_PROBE_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(100)
+    .default(5_000)
+    .description('Timeout for readiness probe dependency checks in milliseconds.'),
+
+  // ── Task orchestrator configuration — Issue #364 ────────────────
+  /** Maximum retries for task orchestration */
+  TASK_ORCHESTRATOR_MAX_RETRIES: Joi.number()
+    .integer()
+    .min(0)
+    .default(3)
+    .description('Maximum number of retry attempts for scheduled tasks.'),
+
+  /** Base backoff time in milliseconds for task retries */
+  TASK_ORCHESTRATOR_BASE_BACKOFF_MS: Joi.number()
+    .integer()
+    .min(100)
+    .default(1_000)
+    .description('Base backoff time in milliseconds before task retries.'),
+
+  /** Maximum backoff time in milliseconds for task retries */
+  TASK_ORCHESTRATOR_MAX_BACKOFF_MS: Joi.number()
+    .integer()
+    .min(100)
+    .default(30_000)
+    .description('Maximum backoff time in milliseconds for task retries.'),
 });
 
 /**
@@ -109,6 +161,13 @@ export type ContractEnvConfig = {
   CONTRACT_SCHEMA_VERSION: string;
   CONTRACT_REPLAY_MAX_EVENTS: number;
   CONTRACT_EVENT_RETENTION_DAYS: number;
+  MAX_ATTACHMENT_SIZE_BYTES: number;
+  ALLOWED_ATTACHMENT_TYPES?: string;
+  ATTACHMENT_SCANNING_ENABLED: string;
+  READINESS_PROBE_TIMEOUT_MS: number;
+  TASK_ORCHESTRATOR_MAX_RETRIES: number;
+  TASK_ORCHESTRATOR_BASE_BACKOFF_MS: number;
+  TASK_ORCHESTRATOR_MAX_BACKOFF_MS: number;
 };
 
 /**

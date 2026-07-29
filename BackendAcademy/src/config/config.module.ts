@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule as NestConfigModule } from '@nestjs/config';
-import { validationSchema } from './env.schema';
+import * as Joi from 'joi';
+import { contractEnvSchema } from './env.schema';
 
 /**
  * Application config module with contract-specific environment
@@ -10,7 +11,8 @@ import { validationSchema } from './env.schema';
   imports: [
     NestConfigModule.forRoot({
       isGlobal: true,
-      validationSchema: Joi.object({
+      validationSchema: contractEnvSchema.concat(
+        Joi.object({
         // ── Base config ─────────────────────────────────────────────
         NODE_ENV: Joi.string().valid('development', 'production', 'test').default('development'),
         PORT: Joi.number().default(3000),
@@ -67,13 +69,11 @@ import { validationSchema } from './env.schema';
           .default('1.0.0'),
         CONTRACT_REPLAY_MAX_EVENTS: Joi.number().integer().min(1).max(10000).default(1000),
         CONTRACT_EVENT_RETENTION_DAYS: Joi.number().integer().min(1).max(365).default(90),
-      }),
+        }),
+      ),
       cache: true,
-      // Same lookup order everywhere; missing files are ignored, so
-      // container deployments that inject env directly are unaffected.
       envFilePath: ['.env.local', '.env'],
       expandVariables: true,
-      validationSchema,
       validationOptions: {
         // Report every invalid variable at once and coerce string env
         // values to their declared types (numbers, booleans, lists, JSON).

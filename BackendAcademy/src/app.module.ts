@@ -32,6 +32,7 @@ import { SearchModule } from './search/search.module';
 import { PaymentsModule } from './payments/payments.module';
 import { I18nModule } from './i18n/i18n.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { HealthModule } from './health/health.module';
 import { CorrelationIdMiddleware } from './common/correlation-id.middleware';
 
 /**
@@ -85,6 +86,8 @@ import { CorrelationIdMiddleware } from './common/correlation-id.middleware';
     PaymentsModule,
     I18nModule,
     NotificationsModule,
+    // #375, #376: Health + readiness probe module
+    HealthModule,
   ],
   controllers: [AppController, ApiInfoController],
   providers: [
@@ -100,4 +103,3 @@ export class AppModule implements NestModule {
     consumer.apply(CorrelationIdMiddleware).forRoutes('*');
   }
 }
-export class AppModule {}
