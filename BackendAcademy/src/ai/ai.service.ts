@@ -22,6 +22,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { RedisService } from '../redis/redis.service';
 import { MonitoringService } from '../monitoring/monitoring.service';
+import { SecurityService } from '../security/security.service';
 
 export const AI_PROVIDER = 'AI_PROVIDER';
 
@@ -41,6 +42,7 @@ export class AiService {
     private readonly redisService?: RedisService,
     private readonly monitoringService?: MonitoringService,
     @Optional() private readonly promptTemplateService?: PromptTemplateService,
+    @Optional() private readonly securityService?: SecurityService,
   ) {
     this.defaultTimeoutMs = this.configService?.get<number>('DEFAULT_REQUEST_TIMEOUT_MS') ?? 30_000;
     this.maxChatHistoryLength = this.configService?.get<number>('AI_MAX_CHAT_HISTORY_LENGTH') ?? 50;
@@ -119,6 +121,27 @@ export class AiService {
           ],
         })
       : this.fallbackResponse(message);
+    // Issue #371: sanitise user-supplied prompts before they reach the AI
+    // provider. When SecurityService is wired in, prompts containing known
+    // prompt-injection patterns are either wrapped in a hard system-pinned
+    // boundary or rejected outright. Without SecurityService we degrade
+    // gracefully (the previous behaviour) so unit tests keep working.
+    const sanitisation = this.securityService
+      ? this.securityService.sanitisePrompt(message)
+      : null;
+
+    const effectiveMessage = sanitisation?.sanitised ?? message;
+
+    const response = sanitisation?.status === 'rejected'
+      ? sanitisation.sanitised
+      : this.aiProvider
+        ? await this.aiProvider.generateChatCompletion({
+            messages: [
+              { role: 'system', content: 'You are a helpful Rust programming tutor.' },
+              { role: 'user', content: effectiveMessage },
+            ],
+          })
+        : this.fallbackResponse(effectiveMessage);
 
     const chatMessage: ChatMessage = {
       id: uuidv4(),
@@ -160,6 +183,16 @@ export class AiService {
       response: chatMessage.response,
       timestamp: chatMessage.timestamp,
       messageId: chatMessage.id,
+      // Surface the sanitisation outcome so callers can audit unsafe inputs.
+      ...(sanitisation && sanitisation.status !== 'safe'
+        ? {
+            safety: {
+              status: sanitisation.status,
+              reasons: sanitisation.reasons,
+              originalLength: sanitisation.originalLength,
+            },
+          }
+        : {}),
     };
   }
 

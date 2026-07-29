@@ -1,23 +1,20 @@
 import * as Joi from 'joi';
 
-/**
- * Base environment variable schema for core application configuration.
- */
-export const baseEnvSchema = Joi.object({
-  NODE_ENV: Joi.string().valid('development', 'production', 'test').default('development'),
-  PORT: Joi.number().default(3000),
-  CORS_ORIGIN: Joi.string().optional(),
-  DATABASE_URL: Joi.string().optional(),
-  REDIS_HOST: Joi.string().default('localhost'),
-  REDIS_PORT: Joi.number().default(6379),
-  JWT_SECRET: Joi.string().optional(),
-  AI_PROVIDER: Joi.string().valid('claude', 'openai', 'mock').default('mock'),
-  ANTHROPIC_API_KEY: Joi.string().optional(),
-  OPENAI_API_KEY: Joi.string().optional(),
-  AI_MODEL: Joi.string().optional(),
-  AI_MAX_TOKENS: Joi.number().default(4096),
-  AI_TEMPERATURE: Joi.number().default(0.7),
-  LOCALE: Joi.string().default('en'),
+export const envSchema = Joi.object({
+  NODE_ENV: Joi.string()
+    .valid('development', 'production', 'test')
+    .default('development')
+    .description('Runtime environment for the application'),
+
+  PORT: Joi.number()
+    .port()
+    .default(3000)
+    .description('Port number for the HTTP server'),
+
+  DATABASE_URL: Joi.string()
+    .uri({ scheme: ['postgres', 'postgresql', 'mysql', 'sqlite', 'http', 'https'] })
+    .optional()
+    .description('Database connection URL'),
 
   // ── AI Prompt Templates (#374) ─────────────────────────────
   /** Version identifier for the active chat prompt template set */
@@ -91,10 +88,46 @@ export const contractEnvSchema = Joi.object({
     .description('Stellar Horizon server URL for contract queries.'),
 
   CONTRACT_REGISTRY_MAX_ENTRIES: Joi.number()
+  REDIS_HOST: Joi.string()
+    .default('localhost')
+    .description('Redis host used for caching and background jobs'),
+
+  REDIS_PORT: Joi.number()
     .integer()
     .min(1)
-    .default(1000)
-    .description('Maximum number of contract registry entries.'),
+    .max(365)
+    .default(90)
+    .description('Number of days to retain contract event logs for replay.'),
+
+  // ── Attachment scanning configuration — Issue #365 ──────────────
+  /** Maximum allowed attachment file size in bytes */
+  MAX_ATTACHMENT_SIZE_BYTES: Joi.number()
+    .integer()
+    .min(1)
+    .default(10_485_760)
+    .description('Maximum allowed attachment file size in bytes (default: 10 MB).'),
+
+  /** Comma-separated list of allowed MIME types for attachments */
+  ALLOWED_ATTACHMENT_TYPES: Joi.string()
+    .optional()
+    .description(
+      'Comma-separated list of allowed MIME types for submission attachments. ' +
+        'Example: "application/pdf,image/png,text/plain"',
+    ),
+
+  /** Whether attachment content policy scanning is enabled */
+  ATTACHMENT_SCANNING_ENABLED: Joi.string()
+    .valid('true', 'false')
+    .default('true')
+    .description('When "true", submission attachments are scanned for policy violations.'),
+
+  // ── Readiness probe configuration — Issue #376 ──────────────────
+  /** Timeout for readiness probe checks in milliseconds */
+  READINESS_PROBE_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(100)
+    .default(5_000)
+    .description('Timeout for readiness probe dependency checks in milliseconds.'),
 
   CONTRACT_SCHEMA_VERSION: Joi.string()
     .pattern(/^\d+\.\d+\.\d+$/)
@@ -102,18 +135,28 @@ export const contractEnvSchema = Joi.object({
     .description('Minimum required contract schema version.'),
 
   CONTRACT_REPLAY_MAX_EVENTS: Joi.number()
+  // ── Task orchestrator configuration — Issue #364 ────────────────
+  /** Maximum retries for task orchestration */
+  TASK_ORCHESTRATOR_MAX_RETRIES: Joi.number()
     .integer()
-    .min(1)
-    .max(10000)
-    .default(1000)
-    .description('Maximum number of contract events to replay in a single batch.'),
+    .min(0)
+    .default(3)
+    .description('Maximum number of retry attempts for scheduled tasks.'),
+
+  /** Base backoff time in milliseconds for task retries */
+  TASK_ORCHESTRATOR_BASE_BACKOFF_MS: Joi.number()
+    .integer()
+    .min(100)
+    .default(1_000)
+    .description('Base backoff time in milliseconds before task retries.'),
 
   CONTRACT_EVENT_RETENTION_DAYS: Joi.number()
+  /** Maximum backoff time in milliseconds for task retries */
+  TASK_ORCHESTRATOR_MAX_BACKOFF_MS: Joi.number()
     .integer()
-    .min(1)
-    .max(365)
-    .default(90)
-    .description('Number of days to retain contract event logs for replay.'),
+    .min(100)
+    .default(30_000)
+    .description('Maximum backoff time in milliseconds for task retries.'),
 });
 
 export const jobEnvSchema = Joi.object({
@@ -146,6 +189,13 @@ export type ContractEnvConfig = {
   CONTRACT_SCHEMA_VERSION: string;
   CONTRACT_REPLAY_MAX_EVENTS: number;
   CONTRACT_EVENT_RETENTION_DAYS: number;
+  MAX_ATTACHMENT_SIZE_BYTES: number;
+  ALLOWED_ATTACHMENT_TYPES?: string;
+  ATTACHMENT_SCANNING_ENABLED: string;
+  READINESS_PROBE_TIMEOUT_MS: number;
+  TASK_ORCHESTRATOR_MAX_RETRIES: number;
+  TASK_ORCHESTRATOR_BASE_BACKOFF_MS: number;
+  TASK_ORCHESTRATOR_MAX_BACKOFF_MS: number;
 };
 
 export function isFeatureEnabled(value: string | undefined): boolean {
@@ -212,3 +262,14 @@ export const validationSchema = baseEnvSchema
   .concat(contractEnvSchema)
   .concat(migrationEnvSchema)
   .concat(notificationEnvSchema);
+    .max(65535)
+    .default(6379)
+    .description('Redis port number'),
+
+  JWT_SECRET: Joi.string()
+    .min(10)
+    .optional()
+    .description('JWT signing secret for authentication tokens'),
+})
+  .unknown(false)
+  .options({ abortEarly: false });

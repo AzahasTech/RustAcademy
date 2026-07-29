@@ -150,6 +150,20 @@ export class DatabaseService implements OnModuleInit {
     sample.forEach((c) => this.coupons.set(c.id, c));
   }
 
+  // ---------------------------------------------------------------------
+  // Health check — Issue #375
+  // ---------------------------------------------------------------------
+
+  /**
+   * Returns true when the database (in-memory store) is operational.
+   */
+  async isHealthy(): Promise<boolean> {
+    // The in-memory store is always healthy as long as the process runs.
+    // In production, this would verify actual DB connectivity (e.g.,
+    // SELECT 1 or a connection pool ping).
+    return true;
+  }
+
   async createCoupon(coupon: CouponRecord): Promise<CouponRecord> {
     this.coupons.set(coupon.id, coupon);
     return coupon;
