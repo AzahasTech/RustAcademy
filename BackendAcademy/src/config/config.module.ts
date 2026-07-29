@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule as NestConfigModule } from '@nestjs/config';
 import * as Joi from 'joi';
 import { contractEnvSchema } from './env.schema';
+import { envSchema } from './env.schema';
 
 /**
  * Application config module with contract-specific environment
@@ -81,6 +82,7 @@ import { contractEnvSchema } from './env.schema';
         allowUnknown: true,
         convert: true,
       },
+      validationSchema: envSchema,
     }),
   ],
   exports: [NestConfigModule],

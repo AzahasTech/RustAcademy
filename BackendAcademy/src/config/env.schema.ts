@@ -1,130 +1,26 @@
 import * as Joi from 'joi';
 
-/**
- * Base environment variable schema for core application configuration.
- */
-export const baseEnvSchema = Joi.object({
-  NODE_ENV: Joi.string().valid('development', 'production', 'test').default('development'),
-  PORT: Joi.number().default(3000),
-  CORS_ORIGIN: Joi.string().optional(),
-  DATABASE_URL: Joi.string().optional(),
-  REDIS_HOST: Joi.string().default('localhost'),
-  REDIS_PORT: Joi.number().default(6379),
-  JWT_SECRET: Joi.string().optional(),
-  AI_PROVIDER: Joi.string().valid('claude', 'openai', 'mock').default('mock'),
-  ANTHROPIC_API_KEY: Joi.string().optional(),
-  OPENAI_API_KEY: Joi.string().optional(),
-  AI_MODEL: Joi.string().optional(),
-  AI_MAX_TOKENS: Joi.number().default(4096),
-  AI_TEMPERATURE: Joi.number().default(0.7),
-  LOCALE: Joi.string().default('en'),
+export const envSchema = Joi.object({
+  NODE_ENV: Joi.string()
+    .valid('development', 'production', 'test')
+    .default('development')
+    .description('Runtime environment for the application'),
 
-  // ── Cron schedules ──────────────────────────────────────────
-  CRON_CLEANUP_SCHEDULE: Joi.string().default('0 0 * * *'),
-  CRON_ANALYTICS_SCHEDULE: Joi.string().default('0 */6 * * *'),
-  CRON_NOTIFICATIONS_SCHEDULE: Joi.string().default('*/30 * * * *'),
-  CRON_CONTRACT_REPLAY_SCHEDULE: Joi.string().optional(),
-});
+  PORT: Joi.number()
+    .port()
+    .default(3000)
+    .description('Port number for the HTTP server'),
 
-/**
- * Environment variable schema that enforces explicit feature flags
- * for contract ingestion and processing. Contract processing modules
- * MUST NOT activate unless their corresponding feature flags are
- * explicitly set to 'true'.
- *
- * This schema extends the base config validation in config.module.ts
- * with contract-specific and feature-flag constraints.
- */
-export const contractEnvSchema = Joi.object({
-  // ── Certificate configuration (#357) ──────────────────────────────
-  /** Base URL for certificate verification and sharing */
-  CERTIFICATE_BASE_URL: Joi.string()
-    .uri()
-    .default('https://rustacademy.xyz/certificates')
-    .description(
-      'Base URL used to construct shareable certificate verification ' +
-        'links. Each certificate gets a URL in the form ' +
-        '{CERTIFICATE_BASE_URL}/verify/{code}.',
-    ),
-
-  // ── Feature flags for contract ingestion ──────────────────────────
-  /** Explicitly enables the contract ingestion pipeline */
-  CONTRACT_INGESTION_ENABLED: Joi.string()
-    .valid('true', 'false')
-    .default('false')
-    .description(
-      'Must be explicitly "true" to enable contract ingestion. ' +
-        'Any other value (or absence) disables ingestion.',
-    ),
-
-  /** Enables schema compatibility checks on contract registry */
-  CONTRACT_REGISTRY_REQUIRE_SCHEMA: Joi.string()
-    .valid('true', 'false')
-    .default('true')
-    .description(
-      'When "true", contract registry entries must pass schema ' +
-        'compatibility validation before being accepted.',
-    ),
-
-  /** Enables contract event replay for recovery/auditing */
-  CONTRACT_EVENT_REPLAY_ENABLED: Joi.string()
-    .valid('true', 'false')
-    .default('false')
-    .description(
-      'When "true", contract event replay endpoints are available ' +
-        'for state recovery and auditing.',
-    ),
-
-  // ── Contract adapter configuration ────────────────────────────────
-  /** Contract adapter mode: 'native' | 'stellar' | 'mock' */
-  CONTRACT_ADAPTER_MODE: Joi.string()
-    .valid('native', 'stellar', 'mock')
-    .default('mock')
-    .description(
-      'Determines which contract adapter implementation is used. ' +
-        '"mock" is the default and safe for local development.',
-    ),
-
-  /** Stellar network for contract operations */
-  CONTRACT_NETWORK: Joi.string()
-    .valid('testnet', 'futurenet', 'mainnet')
-    .default('testnet')
-    .description('Stellar network target for contract deployments.'),
-
-  /** Horizon server URL for Stellar contract operations */
-  STELLAR_HORIZON_URL: Joi.string()
-    .uri()
+  DATABASE_URL: Joi.string()
+    .uri({ scheme: ['postgres', 'postgresql', 'mysql', 'sqlite', 'http', 'https'] })
     .optional()
-    .description('Stellar Horizon server URL for contract queries.'),
+    .description('Database connection URL'),
 
-  // ── Contract registry configuration ───────────────────────────────
-  /** Maximum number of contract registrations allowed */
-  CONTRACT_REGISTRY_MAX_ENTRIES: Joi.number()
-    .integer()
-    .min(1)
-    .default(1000)
-    .description('Maximum number of contract registry entries.'),
+  REDIS_HOST: Joi.string()
+    .default('localhost')
+    .description('Redis host used for caching and background jobs'),
 
-  /** Required contract schema version for compatibility */
-  CONTRACT_SCHEMA_VERSION: Joi.string()
-    .pattern(/^\d+\.\d+\.\d+$/)
-    .default('1.0.0')
-    .description(
-      'Minimum required contract schema version for registry ' +
-        'compatibility. Format: MAJOR.MINOR.PATCH',
-    ),
-
-  // ── Event replay configuration ────────────────────────────────────
-  /** Maximum events to replay in a single batch */
-  CONTRACT_REPLAY_MAX_EVENTS: Joi.number()
-    .integer()
-    .min(1)
-    .max(10000)
-    .default(1000)
-    .description('Maximum number of contract events to replay in a single batch.'),
-
-  /** Retention period for contract events in days */
-  CONTRACT_EVENT_RETENTION_DAYS: Joi.number()
+  REDIS_PORT: Joi.number()
     .integer()
     .min(1)
     .max(365)
@@ -326,3 +222,14 @@ export const validationSchema = baseEnvSchema
   .concat(contractEnvSchema)
   .concat(migrationEnvSchema)
   .concat(notificationEnvSchema);
+    .max(65535)
+    .default(6379)
+    .description('Redis port number'),
+
+  JWT_SECRET: Joi.string()
+    .min(10)
+    .optional()
+    .description('JWT signing secret for authentication tokens'),
+})
+  .unknown(false)
+  .options({ abortEarly: false });
