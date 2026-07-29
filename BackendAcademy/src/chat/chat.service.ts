@@ -61,6 +61,34 @@ export class ChatService {
     return this.messages.filter((m) => m.roomId === roomId);
   }
 
+  /**
+   * #373: Marks in-flight chat messages as incomplete when a streaming
+   * disconnect is detected. This prevents partial AI responses from
+   * persisting in the conversation history.
+   *
+   * Messages flagged as incomplete can be filtered out by the frontend
+   * or cleaned up by the `cleanupIncompleteMessages` method.
+   */
+  markStreamingDisconnect(messageId: string): boolean {
+    const msg = this.messages.find((m) => m.id === messageId);
+    if (!msg) return false;
+    (msg as any).streamingComplete = false;
+    (msg as any).streamingAbortedAt = new Date();
+    return true;
+  }
+
+  /**
+   * #373: Removes all incomplete messages from the in-memory store that
+   * were abandoned due to streaming disconnects.
+   */
+  cleanupIncompleteMessages(): number {
+    const before = this.messages.length;
+    this.messages = this.messages.filter(
+      (m) => (m as any).streamingComplete !== false,
+    );
+    return before - this.messages.length;
+  }
+
   private enforceRateLimit(senderId: string): void {
     const { allowed, retryAfterSeconds } = this.rateLimiter.check(senderId);
     if (!allowed) {

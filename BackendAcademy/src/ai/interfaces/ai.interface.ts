@@ -5,6 +5,8 @@ export interface ChatMessage {
   response: string;
   timestamp: Date;
   context?: Record<string, any>;
+  /** Indicates whether the chat response was fully delivered (#373) */
+  isComplete: boolean;
 }
 
 export interface Hint {
@@ -35,6 +37,10 @@ export interface AiChatRecord {
   startedAt: Date;
   lastActivityAt: Date;
   metadata?: Record<string, unknown>;
+  /** Compact summary of conversation for long tutoring sessions (#372) */
+  summary?: string;
+  /** Timestamp of the last summary generation (#372) */
+  lastSummaryAt?: Date;
 }
 
 export interface VoiceInteractionResponse {
