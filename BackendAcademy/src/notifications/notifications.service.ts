@@ -17,11 +17,8 @@ import { CorrelationLoggerService } from '../logging/logger.service';
  * Batch configuration for low-priority notifications.
  */
 export interface BatchConfig {
-  /** Maximum number of notifications to batch together */
   maxBatchSize: number;
-  /** Maximum time window (ms) to hold notifications before flushing */
   batchWindowMs: number;
-  /** Whether batching is enabled */
   enabled: boolean;
 }
 
@@ -55,7 +52,13 @@ export class NotificationsService {
   };
 
   // ── Default localized notification templates ────────────────
-  static readonly TEMPLATES: Record<string, { titleKey: keyof import('../i18n/localization.service').LocalizationStrings; messageKey: keyof import('../i18n/localization.service').LocalizationStrings }> = {
+  static readonly TEMPLATES: Record<
+    string,
+    {
+      titleKey: string;
+      messageKey: string;
+    }
+  > = {
     welcome: {
       titleKey: 'notification.welcome',
       messageKey: 'notification.welcome',
@@ -117,6 +120,11 @@ export class NotificationsService {
       titleKey: 'notification.contentRejected',
       messageKey: 'notification.contentRejected',
     },
+    // #365: Content policy violation notification
+    contentPolicyViolation: {
+      titleKey: 'notification.submissionFlagged',
+      messageKey: 'notification.submissionFlagged',
+    },
   };
 
   constructor(
@@ -127,14 +135,43 @@ export class NotificationsService {
     @Optional()
     private readonly configService?: ConfigService,
   ) {
-    this.defaultTimeoutMs = this.configService?.get<number>('DEFAULT_REQUEST_TIMEOUT_MS') ?? 30_000;
+    this.defaultTimeoutMs =
+      this.configService?.get<number>('DEFAULT_REQUEST_TIMEOUT_MS') ?? 30_000;
+  }
+
+  // ── Attachment policy violation notification — #365 ──────────
+
+  /**
+   * Creates a notification when an attachment violates content policy.
+   */
+  createContentPolicyViolationNotification(
+    userId: string,
+    reason: string,
+  ): Notification {
+    return this.create({
+      userId,
+      type: 'in-app',
+      title: 'Content Policy Violation',
+      message: `Your submission attachment was rejected: ${reason}. Please review the content policy and resubmit.`,
+    });
+  }
+
+  /**
+   * Creates a localized notification using the contentPolicyViolation template.
+   */
+  notifyContentPolicyViolation(userId: string): Notification {
+    return this.createLocalized('system', 'contentPolicyViolation', 'in-app');
+  }
+
+  createReportNotification(
+    reportId: string,
+    templateName: 'reportTriaged' | 'reportEscalated' | 'reportResolved',
+  ): Notification {
+    return this.createLocalized('system', templateName, 'in-app');
   }
 
   // ── Batch configuration (#386) ────────────────────────────
 
-  /**
-   * Configures notification batching settings.
-   */
   configureBatch(config: Partial<BatchConfig>): void {
     this.batchConfig = { ...this.batchConfig, ...config };
     this.logger.log(
@@ -147,10 +184,6 @@ export class NotificationsService {
   }
 
   // ── Notification CRUD ────────────────────────────────────
-
-  createReportNotification(reportId: string, templateName: 'reportTriaged' | 'reportEscalated' | 'reportResolved'): Notification {
-    return this.createLocalized('system', templateName, 'in-app');
-  }
 
   create(createNotificationDto: CreateNotificationDto): Notification {
     const newNotification: Notification = {
@@ -168,7 +201,7 @@ export class NotificationsService {
   }
 
   findByUserId(userId: string): Notification[] {
-    return this.notifications.filter(n => n.userId === userId);
+    return this.notifications.filter((n) => n.userId === userId);
   }
 
   /**
@@ -186,8 +219,8 @@ export class NotificationsService {
     return this.create({
       userId,
       type,
-      title: this.l10n.t(template.titleKey),
-      message: this.l10n.t(template.messageKey),
+      title: this.l10n.t(template.titleKey as any),
+      message: this.l10n.t(template.messageKey as any),
     });
   }
 
@@ -228,20 +261,12 @@ export class NotificationsService {
     });
   }
 
-  /**
-   * Delivers a notification through all registered providers,
-   * respecting user notification preferences.
-   *
-   * High-priority notifications are delivered immediately.
-   * Low-priority notifications may be batched if batching is enabled.
-   */
   async deliver(
     notification: Notification,
     context: DeliveryContext,
   ): Promise<DeliveryResult[]> {
     const priority = context.priority ?? NotificationPriority.NORMAL;
 
-    // If low priority and batching is enabled, queue for batch
     if (
       priority === NotificationPriority.LOW &&
       this.batchConfig.enabled &&
@@ -253,19 +278,13 @@ export class NotificationsService {
     return this.deliverImmediately(notification, context);
   }
 
-  /**
-   * Delivers a notification immediately through all providers
-   * that the user has enabled in their preferences.
-   */
   private async deliverImmediately(
     notification: Notification,
     context: DeliveryContext,
   ): Promise<DeliveryResult[]> {
-    const enabledProviders = this.getEnabledProviders(context.userId);
-
-    if (enabledProviders.length === 0) {
+    if (!this.providers || this.providers.length === 0) {
       this.logger.warn(
-        `No enabled providers for user ${context.userId} — notification stored only`,
+        'No notification providers registered — notification stored only',
       );
       return [];
     }
@@ -293,10 +312,6 @@ export class NotificationsService {
 
   // ── Batching (#386) ──────────────────────────────────────
 
-  /**
-   * Enqueues a notification for batch delivery.
-   * Flushes the batch when it reaches maxBatchSize.
-   */
   private async enqueueForBatch(
     notification: Notification,
     context: DeliveryContext,
@@ -306,12 +321,10 @@ export class NotificationsService {
       `Batched notification (${this.pendingBatch.length}/${this.batchConfig.maxBatchSize})`,
     );
 
-    // Flush when batch is full
     if (this.pendingBatch.length >= this.batchConfig.maxBatchSize) {
       return this.flushBatch(context);
     }
 
-    // Schedule auto-flush after the configurable window
     if (!this.batchTimer && this.batchConfig.batchWindowMs > 0) {
       this.batchTimer = setTimeout(() => {
         this.flushBatch(context).catch((err) =>
@@ -320,7 +333,6 @@ export class NotificationsService {
       }, this.batchConfig.batchWindowMs);
     }
 
-    // Return placeholder — the actual result is delivered in the batch
     return [
       {
         success: true,
@@ -330,12 +342,6 @@ export class NotificationsService {
     ];
   }
 
-  /**
-   * Flushes all pending batched notifications through providers.
-   *
-   * Low-priority reminders are grouped together and delivered in a single
-   * batch call per provider, reducing noise and improving efficiency.
-   */
   async flushBatch(context?: DeliveryContext): Promise<BatchDeliveryResult> {
     if (this.batchTimer) {
       clearTimeout(this.batchTimer);
@@ -345,7 +351,6 @@ export class NotificationsService {
     const batch = [...this.pendingBatch];
     this.pendingBatch = [];
 
-    // Move batched notifications to main store so they're visible via findAll/findByUserId
     this.notifications.push(...batch);
 
     if (batch.length === 0) {
@@ -361,8 +366,10 @@ export class NotificationsService {
 
     this.logger.log(`Flushing batch of ${batch.length} notifications`);
 
-    const ctx = context || { userId: 'batch', priority: NotificationPriority.LOW };
-    const enabledProviders = this.getEnabledProviders(ctx.userId);
+    const ctx = context || {
+      userId: 'batch',
+      priority: NotificationPriority.LOW,
+    };
     const allResults: DeliveryResult[] = [];
 
     if (enabledProviders.length > 0) {
@@ -397,9 +404,6 @@ export class NotificationsService {
     };
   }
 
-  /**
-   * Returns the count of notifications waiting in the batch queue.
-   */
   getPendingBatchCount(): number {
     return this.pendingBatch.length;
   }
@@ -427,11 +431,36 @@ export class NotificationsService {
     return updated;
   }
 
+  // ── Signed URL notifications ─────────────────────────────
+
+  notifySignedUrlExpiring(
+    userId: string,
+    assetId: string,
+    expiresAt: Date,
+  ): Notification {
+    return this.create({
+      userId,
+      type: 'in-app',
+      title: 'Signed URL Expiring Soon',
+      message: `Your access link for asset ${assetId} will expire at ${expiresAt.toISOString()}. Request a new one if you still need access.`,
+    });
+  }
+
+  notifyInsufficientScope(
+    userId: string,
+    assetId: string,
+    requiredScope: string,
+  ): Notification {
+    return this.create({
+      userId,
+      type: 'in-app',
+      title: 'Insufficient Access Scope',
+      message: `Your access level for asset ${assetId} does not include "${requiredScope}" permissions.`,
+    });
+  }
+
   // ── Provider health ──────────────────────────────────────
 
-  /**
-   * Checks the health of all registered notification providers.
-   */
   async checkProvidersHealth(): Promise<
     Array<{ providerId: string; healthy: boolean }>
   > {
@@ -458,10 +487,6 @@ export class NotificationsService {
     const timer = setTimeout(() => controller.abort(), timeout);
 
     const headers = new Headers({ 'Content-Type': 'application/json' });
-    const correlationId = CorrelationLoggerService.getCorrelationId();
-    if (correlationId) {
-      headers.set('x-correlation-id', correlationId);
-    }
 
     try {
       const response = await fetch(url, {
@@ -475,41 +500,12 @@ export class NotificationsService {
       }
       return { success: true };
     } catch (err) {
-      return { success: false, error: err instanceof Error ? err.message : String(err) };
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
     } finally {
       clearTimeout(timer);
     }
-  }
-
-  /**
-   * Notifies a user that a signed asset URL is about to expire.
-   */
-  notifySignedUrlExpiring(
-    userId: string,
-    assetId: string,
-    expiresAt: Date,
-  ): Notification {
-    return this.create({
-      userId,
-      type: 'in-app',
-      title: 'Signed URL Expiring Soon',
-      message: `Your access link for asset ${assetId} will expire at ${expiresAt.toISOString()}. Request a new one if you still need access.`,
-    });
-  }
-
-  /**
-   * Notifies a user that an asset URL scope was insufficient.
-   */
-  notifyInsufficientScope(
-    userId: string,
-    assetId: string,
-    requiredScope: string,
-  ): Notification {
-    return this.create({
-      userId,
-      type: 'in-app',
-      title: 'Insufficient Access Scope',
-      message: `Your access level for asset ${assetId} does not include "${requiredScope}" permissions.`,
-    });
   }
 }

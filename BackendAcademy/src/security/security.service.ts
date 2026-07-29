@@ -203,6 +203,84 @@ export class SecurityService {
     return { rawKey, keyHash };
   }
 
+  // ---------------------------------------------------------------------------
+  // Attachment scanning — Issue #365
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Scans an attachment for content policy violations.
+   *
+   * Checks file metadata (type, size) against configured policy rules
+   * to prevent storage issues and moderation problems. In production,
+   * this would integrate with a virus scanner or content moderation API.
+   */
+  scanContentPolicy(
+    fileType?: string,
+    fileSize?: number,
+  ): { allowed: boolean; reason?: string } {
+    // Block executable and potentially dangerous file types
+    const blockedTypes = [
+      'application/x-msdownload',
+      'application/x-msdos-program',
+      'application/x-executable',
+      'application/x-sh',
+      'application/x-bat',
+      'application/x-cmd',
+      'application/x-msi',
+      'application/javascript',
+      'application/x-php',
+      'application/x-python',
+      'application/x-perl',
+      'application/x-ruby',
+    ];
+
+    if (fileType && blockedTypes.includes(fileType.toLowerCase())) {
+      return {
+        allowed: false,
+        reason: `File type "${fileType}" is blocked by content policy`,
+      };
+    }
+
+    // Block zero-byte files if size is explicitly 0
+    if (fileSize === 0) {
+      return {
+        allowed: false,
+        reason: 'Empty files (0 bytes) are not allowed',
+      };
+    }
+
+    return { allowed: true };
+  }
+
+  /**
+   * Validates an attachment against size and type constraints.
+   *
+   * Returns detailed validation result for use by callers that need
+   * to surface specific error details to the user.
+   */
+  validateAttachment(
+    fileSize: number,
+    fileType: string,
+    maxSizeBytes: number,
+    allowedTypes: string[],
+  ): { valid: boolean; errorCode?: string; message?: string } {
+    if (fileSize > maxSizeBytes) {
+      return {
+        valid: false,
+        errorCode: 'ATTACHMENT_TOO_LARGE',
+        message: `File size ${fileSize} exceeds maximum of ${maxSizeBytes} bytes`,
+      };
+    }
+
+    if (fileType && !allowedTypes.includes(fileType.toLowerCase())) {
+      return {
+        valid: false,
+        errorCode: 'ATTACHMENT_TYPE_NOT_ALLOWED',
+        message: `File type "${fileType}" is not in the allowed types list`,
+      };
+    }
+
+    return { valid: true };
   /**
    * Sanitises an AI-bound prompt (Issue #371). Returns a structured result
    * describing whether the prompt was safe, had to be wrapped, or had to be

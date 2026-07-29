@@ -18,6 +18,15 @@ import { SubmissionModule } from './submissions/submission.module';
 import { RewardsModule } from './rewards/rewards.module';
 import { SecurityModule } from './security/security.module';
 import { AppConfigModule } from './config/config.module';
+import { AssetsModule } from './assets/assets.module';
+import { PathfindingModule } from './pathfinding/pathfinding.module';
+import { MonitoringModule } from './monitoring/monitoring.module';
+import { SearchModule } from './search/search.module';
+import { PaymentsModule } from './payments/payments.module';
+import { I18nModule } from './i18n/i18n.module';
+import { NotificationsModule } from './notifications/notifications.module';
+import { HealthModule } from './health/health.module';
+import { CorrelationIdMiddleware } from './common/correlation-id.middleware';
 
 /**
  * Root application module.
@@ -44,6 +53,27 @@ import { AppConfigModule } from './config/config.module';
     SubmissionModule,
     RewardsModule,
     SecurityModule,
+    ChallengesModule,
+    AiModule,
+    LeaderboardModule,
+    AnalyticsModule,
+    WalletModule,
+    SocialModule,
+    OnboardingModule,
+    LessonModule,
+    TaskModule,
+    CourseModule,
+    AssetsModule,
+    LoggingModule,
+    PathfindingModule,
+    MonitoringModule,
+    ProgressModule,
+    SearchModule,
+    PaymentsModule,
+    I18nModule,
+    NotificationsModule,
+    // #375, #376: Health + readiness probe module
+    HealthModule,
   ],
   controllers: [AppController],
   providers: [
@@ -59,4 +89,3 @@ export class AppModule implements NestModule {
     consumer.apply(CorrelationIdMiddleware).forRoutes('*');
   }
 }
-export class AppModule {}
