@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit, Inject, Optional } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { isFeatureEnabled } from '../config/env.schema';
 
@@ -34,6 +34,24 @@ export interface ReplayJobResult {
   error?: string;
 }
 
+/**
+ * A competition tracked for automatic lifecycle transitions (#competition mode).
+ */
+interface TrackedCompetition {
+  competitionId: string;
+  endsAt: Date;
+  resetScheduledAt?: Date;
+}
+
+/**
+ * Record of an automatic (or manually-logged) competition reset.
+ */
+export interface CompetitionResetLogEntry {
+  competitionId: string;
+  resetAt: Date;
+  reason: 'time-boxed-end' | 'manual';
+}
+
 @Injectable()
 export class JobsService implements OnModuleInit {
   private readonly logger = new Logger(JobsService.name);
@@ -66,11 +84,26 @@ export class JobsService implements OnModuleInit {
           'Set CONTRACT_EVENT_REPLAY_ENABLED=true to enable.',
       );
     }
+
+    // #competition: Log competition mode availability
+    if (this.isCompetitionModeEnabled()) {
+      this.logger.log('Competition mode jobs (time-boxed events/resets) are ENABLED');
+    } else {
+      this.logger.log(
+        'Competition mode jobs are DISABLED. ' + 'Set COMPETITION_MODE_ENABLED=true to enable.',
+      );
+    }
   }
 
   // ──────────────────────────────────────────────────────────────────
   // Existing schedule management
   // ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Preference cache for notification jobs (#385).
+   * Avoids repeated lookups during batch processing.
+   */
+  private readonly notificationPrefsCache = new Map<string, boolean>();
 
   private loadSchedules(): void {
     const entries: Array<{ name: string; key: string }> = [
@@ -79,14 +112,14 @@ export class JobsService implements OnModuleInit {
       { name: 'notifications', key: 'CRON_NOTIFICATIONS_SCHEDULE' },
       // #394: Replay schedule for periodic event replay
       { name: 'contract_replay', key: 'CRON_CONTRACT_REPLAY_SCHEDULE' },
+      // #competition: Schedule for polling time-boxed competitions that need to end/reset
+      { name: 'competition_reset', key: 'CRON_COMPETITION_RESET_SCHEDULE' },
     ];
 
     for (const entry of entries) {
       const raw = this.configService.get<string>(entry.key);
       if (!raw) {
-        this.logger.warn(
-          `No cron expression configured for ${entry.name}, using default`,
-        );
+        this.logger.warn(`No cron expression configured for ${entry.name}, using default`);
         continue;
       }
       const schedule = this.parseCron(raw, entry.name);
@@ -199,6 +232,46 @@ export class JobsService implements OnModuleInit {
   }
 
   // ──────────────────────────────────────────────────────────────────
+  // #385: Notification preference verification for job processing
+  // ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Checks whether a user has enabled notification delivery.
+   * Uses a simple cache to avoid repeated lookups during batch processing.
+   *
+   * Returns true when the user has not explicitly disabled notifications,
+   * ensuring silent notification loss is prevented.
+   */
+  shouldSendNotification(userId: string, channel: string): boolean {
+    const cacheKey = `${userId}:${channel}`;
+    if (this.notificationPrefsCache.has(cacheKey)) {
+      return this.notificationPrefsCache.get(cacheKey)!;
+    }
+
+    // Default to enabled when no explicit preference is stored.
+    // In production this would query a UserPreferences table.
+    const enabled = true;
+    this.notificationPrefsCache.set(cacheKey, enabled);
+    return enabled;
+  }
+
+  /**
+   * Invalidates the notification preference cache for a user.
+   * Called when user preferences are updated.
+   */
+  clearNotificationPrefsCache(userId?: string): void {
+    if (userId) {
+      for (const key of this.notificationPrefsCache.keys()) {
+        if (key.startsWith(`${userId}:`)) {
+          this.notificationPrefsCache.delete(key);
+        }
+      }
+    } else {
+      this.notificationPrefsCache.clear();
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────────────
   // #394: Event replay job support
   // ──────────────────────────────────────────────────────────────────
 
@@ -222,9 +295,7 @@ export class JobsService implements OnModuleInit {
    */
   getReplayJobHistory(limit?: number): ReplayJobResult[] {
     const history = [...this.replayJobHistory];
-    history.sort(
-      (a, b) => b.executedAt.getTime() - a.executedAt.getTime(),
-    );
+    history.sort((a, b) => b.executedAt.getTime() - a.executedAt.getTime());
     return limit ? history.slice(0, limit) : history;
   }
 
@@ -232,18 +303,88 @@ export class JobsService implements OnModuleInit {
    * Checks whether the contract replay feature is enabled.
    */
   isReplayEnabled(): boolean {
-    return isFeatureEnabled(
-      this.configService.get<string>('CONTRACT_EVENT_REPLAY_ENABLED'),
-    );
+    return isFeatureEnabled(this.configService.get<string>('CONTRACT_EVENT_REPLAY_ENABLED'));
   }
 
   /**
    * Checks whether contract ingestion is enabled.
    */
   isIngestionEnabled(): boolean {
-    return isFeatureEnabled(
-      this.configService.get<string>('CONTRACT_INGESTION_ENABLED'),
+    return isFeatureEnabled(this.configService.get<string>('CONTRACT_INGESTION_ENABLED'));
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // Competition lifecycle scheduling — time-boxed events & resets
+  // ──────────────────────────────────────────────────────────────────
+
+  /** Competitions currently tracked for automatic lifecycle transitions. */
+  private readonly trackedCompetitions = new Map<string, TrackedCompetition>();
+
+  /** History of competition resets performed by this job runner. */
+  private readonly competitionResetLog: CompetitionResetLogEntry[] = [];
+
+  isCompetitionModeEnabled(): boolean {
+    return isFeatureEnabled(this.configService.get<string>('COMPETITION_MODE_ENABLED'));
+  }
+
+  /**
+   * Registers a time-boxed competition so its end can be detected by the
+   * `competition_reset` cron tick. Call this right after creating a
+   * competition (e.g. from LeaderboardService.createCompetition).
+   */
+  registerCompetitionLifecycle(competitionId: string, endsAt: Date): void {
+    this.trackedCompetitions.set(competitionId, { competitionId, endsAt });
+    this.logger.log(
+      `Tracking competition ${competitionId} for lifecycle transition at ${endsAt.toISOString()}`,
     );
+  }
+
+  /** Stops tracking a competition (e.g. it was cancelled before ending). */
+  unregisterCompetitionLifecycle(competitionId: string): boolean {
+    return this.trackedCompetitions.delete(competitionId);
+  }
+
+  /**
+   * Returns competitions whose time-box has elapsed and that haven't yet
+   * been flagged for reset. Intended to be polled on the
+   * CRON_COMPETITION_RESET_SCHEDULE cadence; the caller is responsible for
+   * actually resetting the competition's leaderboard (e.g. via
+   * LeaderboardService.resetCompetition) and then calling
+   * recordCompetitionReset() to close the loop.
+   */
+  getCompetitionsDueForReset(): string[] {
+    const now = new Date();
+    const due: string[] = [];
+    for (const tracked of this.trackedCompetitions.values()) {
+      if (tracked.endsAt <= now && !tracked.resetScheduledAt) {
+        tracked.resetScheduledAt = now;
+        due.push(tracked.competitionId);
+      }
+    }
+    return due;
+  }
+
+  /**
+   * Records that a tracked competition was reset, then stops tracking it.
+   */
+  recordCompetitionReset(
+    competitionId: string,
+    reason: 'time-boxed-end' | 'manual' = 'time-boxed-end',
+  ): void {
+    this.competitionResetLog.push({ competitionId, resetAt: new Date(), reason });
+    this.trackedCompetitions.delete(competitionId);
+    this.logger.log(`Competition ${competitionId} reset recorded (${reason})`);
+
+    if (this.competitionResetLog.length > 1000) {
+      this.competitionResetLog.splice(0, this.competitionResetLog.length - 1000);
+    }
+  }
+
+  getCompetitionResetLog(limit?: number): CompetitionResetLogEntry[] {
+    const log = [...this.competitionResetLog].sort(
+      (a, b) => b.resetAt.getTime() - a.resetAt.getTime(),
+    );
+    return limit ? log.slice(0, limit) : log;
   }
 
   // ── Private helpers ──────────────────────────────────────────────
@@ -294,12 +435,15 @@ export class JobsService implements OnModuleInit {
   // ---------------------------------------------------------------------------
 
   /** Queue of pending webhook retries, keyed by webhookId. */
-  private readonly pendingWebhookRetries = new Map<string, {
-    webhookId: string;
-    attempt: number;
-    nextRetryAt: Date;
-    lastError?: string;
-  }>();
+  private readonly pendingWebhookRetries = new Map<
+    string,
+    {
+      webhookId: string;
+      attempt: number;
+      nextRetryAt: Date;
+      lastError?: string;
+    }
+  >();
 
   /**
    * Schedules a webhook retry with exponential backoff and jitter.

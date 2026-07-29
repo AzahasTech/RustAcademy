@@ -1,4 +1,8 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import {
+  TransactionManagerService,
+  TransactionSnapshot,
+} from '../common/transaction-manager.service';
 
 export interface CouponRecord {
   id: string;
@@ -67,9 +71,13 @@ export interface PaymentTransitionResult {
 
 @Injectable()
 export class DatabaseService implements OnModuleInit {
+  private readonly logger = new Logger(DatabaseService.name);
   private coupons: Map<string, CouponRecord> = new Map();
   private redemptions: RedemptionRecord[] = [];
   private payments: Map<string, PaymentRecord> = new Map();
+  private migrationsApplied: string[] = [];
+
+  constructor(private readonly transactionManager: TransactionManagerService) {}
 
   /**
    * Explicit state machine for payment status transitions. A status that
@@ -85,6 +93,27 @@ export class DatabaseService implements OnModuleInit {
 
   onModuleInit() {
     this.seedSampleCoupons();
+    this.ensureMigrationTracking();
+  }
+
+  /**
+   * Ensures migration tracking table is initialized.
+   * Runs as part of startup to guarantee migration order awareness.
+   */
+  private ensureMigrationTracking(): void {
+    this.migrationsApplied = [];
+  }
+
+  recordMigrationApplied(name: string): void {
+    this.migrationsApplied.push(name);
+  }
+
+  getAppliedMigrations(): string[] {
+    return [...this.migrationsApplied];
+  }
+
+  hasMigrationBeenApplied(name: string): boolean {
+    return this.migrationsApplied.includes(name);
   }
 
   private seedSampleCoupons() {
@@ -296,6 +325,11 @@ export class DatabaseService implements OnModuleInit {
    * Only a genuine, first-time, legal transition returns transitioned: true;
    * callers should gate side effects (e.g. granting a coupon redemption) on
    * that flag alone.
+   *
+   * #358: All mutations are wrapped in a transactional atomic operation.
+   * If the status update, event ID append, or timestamp update fail, every
+   * mutation is rolled back so the payment is never left in an
+   * inconsistent intermediate state.
    */
   async updatePaymentStatus(
     paymentId: string,
@@ -341,10 +375,45 @@ export class DatabaseService implements OnModuleInit {
       };
     }
 
-    payment.status = newStatus;
-    payment.appliedEventIds.push(eventId);
-    payment.updatedAt = new Date();
-    this.payments.set(payment.id, payment);
+    // Apply the transition atomically — capture pre-mutation state for
+    // rollback in case any step fails (#358).
+    const prevStatus = payment.status;
+    const prevEventIds = [...payment.appliedEventIds];
+    const prevUpdatedAt = payment.updatedAt;
+
+    const txResult = await this.transactionManager.runAtomic(async (tx) => {
+      payment.status = newStatus;
+      payment.appliedEventIds.push(eventId);
+      payment.updatedAt = new Date();
+      this.payments.set(payment.id, payment);
+
+      await tx.addOperation(async (): Promise<TransactionSnapshot> => ({
+        restore: () => {
+          payment.status = prevStatus;
+          payment.appliedEventIds.splice(
+            payment.appliedEventIds.length - 1,
+            1,
+          );
+          payment.updatedAt = prevUpdatedAt;
+          this.payments.set(payment.id, payment);
+        },
+        data: { paymentId, prevStatus, prevEventIds, prevUpdatedAt },
+      }));
+
+      return payment;
+    });
+
+    if (!txResult.success) {
+      this.logger.error(
+        `Payment status transition failed for ${paymentId}: ${txResult.error?.message}`,
+      );
+      return {
+        success: false,
+        transitioned: false,
+        reason: `Transaction failed: ${txResult.error?.message}`,
+        payment,
+      };
+    }
 
     return { success: true, transitioned: true, payment };
   }

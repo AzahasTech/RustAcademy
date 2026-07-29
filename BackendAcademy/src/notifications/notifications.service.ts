@@ -11,6 +11,7 @@ import {
 import { CreateNotificationDto } from './dto/create-notification.dto';
 import { NotificationPreferences } from './interfaces/preferences.interface';
 import { LocalizationService } from '../i18n/localization.service';
+import { CorrelationLoggerService } from '../logging/logger.service';
 
 /**
  * Batch configuration for low-priority notifications.
@@ -73,6 +74,15 @@ export class NotificationsService {
     courseCompleted: {
       titleKey: 'notification.courseCompleted',
       messageKey: 'notification.courseCompleted',
+    },
+    // #357: Certificate generation notification
+    certificateGenerated: {
+      titleKey: 'notification.certificateGenerated',
+      messageKey: 'notification.certificateGenerated',
+    },
+    certificateRevoked: {
+      titleKey: 'notification.certificateRevoked',
+      messageKey: 'notification.certificateRevoked',
     },
     submissionFlagged: {
       titleKey: 'notification.submissionFlagged',
@@ -214,7 +224,42 @@ export class NotificationsService {
     });
   }
 
-  // ── Provider-based delivery (#388) ───────────────────────
+  // ── Preference-aware provider delivery (#385) ────────────
+
+  /**
+   * Checks whether a user has opted into a given notification channel.
+   * Falls back to a sensible default (enabled) when no explicit preference exists.
+   */
+  private isChannelEnabled(userId: string, channel: keyof NotificationPreferences): boolean {
+    const prefs = this.getPreferences(userId);
+    return prefs[channel] !== false;
+  }
+
+  /**
+   * Filters the available providers down to the ones the user has opted into.
+   *
+   * Maps each provider to its corresponding preference key:
+   *   - 'email'  → email_alerts
+   *   - 'push'   → push_notifications
+   *   - 'in-app' → push_notifications (in-app uses push channel)
+   */
+  private getEnabledProviders(
+    userId: string,
+  ): INotificationProvider[] {
+    if (!this.providers) return [];
+
+    const channelMap: Record<string, keyof NotificationPreferences> = {
+      email: 'email_alerts',
+      push: 'push_notifications',
+      'in-app': 'push_notifications',
+    };
+
+    return this.providers.filter((p) => {
+      const prefKey = channelMap[p.providerId];
+      if (!prefKey) return true; // unknown providers default to enabled
+      return this.isChannelEnabled(userId, prefKey);
+    });
+  }
 
   async deliver(
     notification: Notification,
@@ -245,7 +290,7 @@ export class NotificationsService {
     }
 
     const results = await Promise.allSettled(
-      this.providers.map((provider) =>
+      enabledProviders.map((provider) =>
         provider.send(notification, context),
       ),
     );
@@ -255,7 +300,7 @@ export class NotificationsService {
         return result.value;
       }
       this.logger.error(
-        `Provider ${this.providers![index].providerId} failed: ${result.reason}`,
+        `Provider ${enabledProviders[index].providerId} failed: ${result.reason}`,
       );
       return {
         success: false,
@@ -327,8 +372,8 @@ export class NotificationsService {
     };
     const allResults: DeliveryResult[] = [];
 
-    if (this.providers && this.providers.length > 0) {
-      for (const provider of this.providers) {
+    if (enabledProviders.length > 0) {
+      for (const provider of enabledProviders) {
         if (provider.sendBatch) {
           const results = await provider.sendBatch(batch, ctx);
           allResults.push(...results);

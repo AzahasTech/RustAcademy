@@ -4,6 +4,7 @@ import { AnalyticsService } from '../analytics/analytics.service';
 import { RewardsService } from '../rewards/rewards.service';
 import { DatabaseService } from '../database/database.service';
 import { ReplayResult, StateReconciliationResult } from '../contracts/interfaces/contracts.interface';
+import { CertificateService, CertificateIssuanceSummary } from '../courses/certificate.service';
 
 export interface DailyActivitySummary {
   date: string;
@@ -107,6 +108,7 @@ export class ReportsService {
     private readonly submissionsService: SubmissionsService,
     private readonly databaseService?: DatabaseService,
     private readonly walletService?: WalletService,
+    private readonly certificateService?: CertificateService,
   ) {}
 
   async getModerationReport(): Promise<{ totalFlagged: number; actionTaken: number; pendingReview: number }> {
@@ -280,6 +282,27 @@ export class ReportsService {
       discrepanciesBySeverity: bySeverity,
       recentReconciliations,
     };
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // #357: Certificate issuance reports
+  // ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Generates a report summarizing certificate issuance activity.
+   * Returns a zeroed report when no certificate service is available.
+   */
+  getCertificateIssuanceReport(): CertificateIssuanceSummary {
+    if (!this.certificateService) {
+      return {
+        totalIssued: 0,
+        totalActive: 0,
+        totalRevoked: 0,
+        issuedByCourse: [],
+        recentIssuances: [],
+      };
+    }
+    return this.certificateService.getIssuanceSummary();
   }
 
   // ──────────────────────────────────────────────────────────────────
