@@ -19,6 +19,16 @@ export interface AiChatResponse {
   response: string;
   timestamp: Date;
   messageId: string;
+  /**
+   * Issue #371 — prompt sanitisation outcome. Present only when the
+   * SecurityService flagged the user input. Omitted for clean inputs to
+   * keep the common path zero-cost.
+   */
+  safety?: {
+    status: 'wrapped' | 'rejected';
+    reasons: string[];
+    originalLength: number;
+  };
 }
 
 export interface AiHintResponse {
