@@ -1,4 +1,4 @@
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { CreateChatRequestDto } from './dto/create-chat-request.dto';
 import { GetHintDto } from './dto/get-hint.dto';
@@ -24,8 +24,14 @@ import { MonitoringService } from '../monitoring/monitoring.service';
 
 export const AI_PROVIDER = 'AI_PROVIDER';
 
+const MAX_CHAT_HISTORY_PER_USER = 200; // bound in-memory growth per user
+const MAX_TRACKED_USERS = 5_000; // bound total map size across users
+const MAX_PRE_SCORE_CODE_LENGTH = 20_000; // guard against oversized submissions
+
 @Injectable()
 export class AiService {
+  private readonly logger = new Logger(AiService.name);
+
   private chatHistory: Map<string, ChatMessage[]> = new Map();
   private chatRecords: Map<string, AiChatRecord> = new Map();
   private hints: Map<string, Hint[]> = new Map();
@@ -40,6 +46,12 @@ export class AiService {
   ) {
     this.defaultTimeoutMs = this.configService?.get<number>('DEFAULT_REQUEST_TIMEOUT_MS') ?? 30_000;
     this.initializeSampleHints();
+
+    // Surface missing optional dependencies loudly instead of failing silently.
+    if (!this.redisService) this.logger.warn('RedisService not injected — chat/recommendation state is process-local and non-durable.');
+    if (!this.analyticsService) this.logger.warn('AnalyticsService not injected — pre-score events will not be tracked.');
+    if (!this.monitoringService) this.logger.warn('MonitoringService not injected — domain events will not be recorded.');
+    if (!this.aiProvider) this.logger.warn('AiProvider not injected — chat requests will use the static fallback response.');
   }
 
   async getRecommendation(userId: string): Promise<AiRecommendationResponse> {
@@ -99,14 +111,7 @@ export class AiService {
   ): Promise<AiChatResponse> {
     const { message, userId, context } = createChatRequestDto;
 
-    const response = this.aiProvider
-      ? await this.aiProvider.generateChatCompletion({
-          messages: [
-            { role: 'system', content: 'You are a helpful Rust programming tutor.' },
-            { role: 'user', content: message },
-          ],
-        })
-      : this.fallbackResponse(message);
+    const response = await this.generateChatResponse(message);
 
     const chatMessage: ChatMessage = {
       id: uuidv4(),
@@ -117,10 +122,17 @@ export class AiService {
       context,
     };
 
-    if (!this.chatHistory.has(userId)) {
-      this.chatHistory.set(userId, []);
-    }
-    this.chatHistory.get(userId)!.push(chatMessage);
+    this.appendChatHistory(userId, chatMessage);
+
+    // Fix: chatRecords was previously never populated, so getChatRecord()/
+    // listChatRecords() always returned nothing. Record one entry per
+    // processed message here, keyed by the message id as its sessionId.
+    this.chatRecords.set(chatMessage.id, {
+      sessionId: chatMessage.id,
+      userId,
+      messages: [chatMessage],
+      createdAt: chatMessage.timestamp,
+    } as AiChatRecord);
 
     if (this.redisService) {
       await this.redisService.refreshUserSnapshot(userId, {
@@ -135,6 +147,53 @@ export class AiService {
       timestamp: chatMessage.timestamp,
       messageId: chatMessage.id,
     };
+  }
+
+  /**
+   * Calls the AI provider with the global request timeout (Issue #408) and
+   * falls back to a static response if the provider is unavailable, times
+   * out, or errors — so a flaky upstream never surfaces as a 500 to callers.
+   */
+  private async generateChatResponse(message: string): Promise<string> {
+    if (!this.aiProvider) {
+      return this.fallbackResponse(message);
+    }
+
+    try {
+      return await this.withTimeout(
+        this.aiProvider.generateChatCompletion({
+          messages: [
+            { role: 'system', content: 'You are a helpful Rust programming tutor.' },
+            { role: 'user', content: message },
+          ],
+        }),
+        this.defaultTimeoutMs,
+      );
+    } catch (err) {
+      this.logger.error('AI provider call failed, falling back to static response', err as Error);
+      if (this.monitoringService) {
+        this.monitoringService.recordDomainEvent('ai_provider_failure', 'ai');
+      }
+      return this.fallbackResponse(message);
+    }
+  }
+
+  private withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`AI provider call timed out after ${timeoutMs}ms`)),
+        timeoutMs,
+      );
+      promise
+        .then((value) => {
+          clearTimeout(timer);
+          resolve(value);
+        })
+        .catch((err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
+    });
   }
 
   async getHint(getHintDto: GetHintDto): Promise<AiHintResponse> {
@@ -165,6 +224,13 @@ export class AiService {
 
   async preScore(dto: PreScoreDto): Promise<PreScoreResult> {
     const { taskId, code } = dto;
+
+    if (code.length > MAX_PRE_SCORE_CODE_LENGTH) {
+      throw new Error(
+        `Submission exceeds maximum length of ${MAX_PRE_SCORE_CODE_LENGTH} characters`,
+      );
+    }
+
     const lines = code.split('\n').filter((l) => l.trim().length > 0).length;
     const hasComments = code.includes('//') || code.includes('/*');
     const hasFunctions = code.includes('fn ');
@@ -296,16 +362,25 @@ export class AiService {
   }
 
   /**
-   * Executes an outbound AI provider call with a global request timeout — Issue #408.
+   * Bounded append: caps per-user history length and total tracked users
+   * so this in-memory map can't grow without limit in a long-lived process.
+   * This is a stopgap — durable, cross-instance history should move to
+   * Redis/Postgres via `redisService`, since chat state currently doesn't
+   * survive a restart or work across multiple API replicas.
    */
-  async fetchWithTimeout(url: string, init?: RequestInit, timeoutMs?: number): Promise<Response> {
-    const timeout = timeoutMs ?? this.defaultTimeoutMs;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeout);
-    try {
-      return await fetch(url, { ...init, signal: controller.signal });
-    } finally {
-      clearTimeout(timer);
+  private appendChatHistory(userId: string, chatMessage: ChatMessage) {
+    if (!this.chatHistory.has(userId)) {
+      if (this.chatHistory.size >= MAX_TRACKED_USERS) {
+        const oldestKey = this.chatHistory.keys().next().value;
+        if (oldestKey !== undefined) this.chatHistory.delete(oldestKey);
+      }
+      this.chatHistory.set(userId, []);
+    }
+
+    const history = this.chatHistory.get(userId)!;
+    history.push(chatMessage);
+    if (history.length > MAX_CHAT_HISTORY_PER_USER) {
+      history.splice(0, history.length - MAX_CHAT_HISTORY_PER_USER);
     }
   }
 }
