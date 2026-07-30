@@ -19,6 +19,7 @@ const aiProviderFactory = {
 
 @Module({
   controllers: [AiController],
+  //ai controller
   providers: [AiService, PromptTemplateService, aiProviderFactory],
   exports: [AiService, PromptTemplateService],
 })
