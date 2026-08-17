@@ -49,6 +49,24 @@ export type UserListing = {
 
 export type BidResult = { success: true } | { success: false; reason: string };
 
+/**
+ * Human-readable countdown to the given date.
+ * e.g. "2d 3h", "47m", "Ended"
+ *
+ * Pure helper shared by the mock and production providers so components
+ * (e.g. UsernameCard) can render the countdown without coupling to a
+ * specific provider.
+ */
+export function formatCountdown(date: Date, now: number = Date.now()): string {
+  const diff = date.getTime() - now;
+  if (diff <= 0) return "Ended";
+  const h = Math.floor(diff / 3_600_000);
+  const m = Math.floor((diff % 3_600_000) / 60_000);
+  if (h >= 24) return `${Math.floor(h / 24)}d ${h % 24}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
 // ── Provider interface ───────────────────────────────────────────────────────
 
 /**
