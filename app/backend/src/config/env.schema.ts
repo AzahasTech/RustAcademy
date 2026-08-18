@@ -1,5 +1,7 @@
 import * as Joi from "joi";
 
+import { sanitizeErrorMessage } from "../common/utils/redaction.util";
+
 /**
  * Environment variable validation schema.
  * Validates all required and optional environment variables at startup.
@@ -467,6 +469,43 @@ export const envSchema = Joi.object({
   .messages({
     "any.custom": "{{#message}}",
   });
+
+/**
+ * Validates an environment object against {@link envSchema} and returns the
+ * typed config with defaults applied.
+ *
+ * Fail-fast: throws a single Error listing every missing or invalid variable
+ * (with the offending key name) so operators can fix the whole environment in
+ * one pass. Raw secret values are redacted from the message.
+ *
+ * @param env - Environment variables to validate (e.g. `process.env`)
+ * @param options - Validation options. `allowUnknown` defaults to `true`,
+ *   matching the runtime `ConfigModule` configuration.
+ */
+export function validateEnv(
+  env: Record<string, unknown>,
+  options: { allowUnknown?: boolean } = {},
+): EnvConfig {
+  const { error, value } = envSchema.validate(env, {
+    abortEarly: false,
+    allowUnknown: options.allowUnknown ?? true,
+  });
+
+  if (error) {
+    const issues = error.details.map(
+      (detail) =>
+        `  - ${detail.path.join(".") || "(root)"}: ${detail.message}`,
+    );
+    const label = issues.length === 1 ? "issue" : "issues";
+    const message =
+      `Environment validation failed (${issues.length} ${label}):\n` +
+      issues.join("\n") +
+      "\nFix the listed variables in your environment (or .env file) and restart.";
+    throw new Error(sanitizeErrorMessage(message));
+  }
+
+  return value as EnvConfig;
+}
 
 /**
  * Interface for typed environment variables
