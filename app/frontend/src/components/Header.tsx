@@ -1,10 +1,12 @@
 "use client";
 
+import { useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { LocaleSwitcher } from "@/components/LocaleSwitcher";
 import { NotificationBell } from "@/components/NotificationBell";
 import "@/lib/i18n";
+import i18n from "@/lib/i18n";
 import { useTranslation } from "react-i18next";
 
 const NAV_LINK_CLASS =
@@ -13,6 +15,16 @@ const NAV_LINK_CLASS =
 export function Header() {
   const { t } = useTranslation();
   const pathname = usePathname();
+
+  // Restore the user's saved language after hydration. i18n initializes in
+  // "en" deterministically on server + client, so applying the stored locale
+  // here avoids a hydration mismatch while still persisting the choice.
+  useEffect(() => {
+    const saved = window.localStorage.getItem("i18nextLng");
+    if (saved && saved !== i18n.language) {
+      i18n.changeLanguage(saved);
+    }
+  }, []);
 
   const isActive = (href: string) =>
     pathname === href || pathname?.startsWith(`${href}/`);
@@ -31,7 +43,7 @@ export function Header() {
       >
         <Link
           href="/"
-          aria-label=" RustAcademy home"
+          aria-label="RustAcademy home"
           className={`flex shrink-0 items-center gap-2 lg:mr-4 ${NAV_LINK_CLASS}`}
         >
           <div

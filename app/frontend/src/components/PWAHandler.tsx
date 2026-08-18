@@ -61,7 +61,7 @@ export function PWAHandler() {
             });
           });
         })
-        .catch((err) => errorReporter.captureError(err, { context: { component: 'PWAHandler' } }));
+        .catch((err) => errorReporter.captureError(err, { route: "/", extra: { component: "PWAHandler" } }));
     }
 
     // Check if already installed

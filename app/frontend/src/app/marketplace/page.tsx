@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { UsernameCard } from "@/components/UsernameCard";
 import { ListingDetailModal } from "@/components/ListingDetailModal";
 import type { MarketplaceListing } from "@/hooks/marketplaceApi";
@@ -97,7 +97,6 @@ function MarketplacePageContent() {
     () => listings.find((l) => l.id === detailListingId) ?? null,
     [listings, detailListingId],
   );
-  const [showWatchlistOnly, setShowWatchlistOnly] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
   const { watchlist, isInWatchlist, toggleWatchlist } = useWatchlist();
