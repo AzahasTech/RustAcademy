@@ -128,5 +128,9 @@ function buildFallbackMetadata(
 }
 
 export default function PayPage() {
-  return <PaymentPageClient />;
+  return (
+    <div id="payment-page" aria-label="Payment page">
+      <PaymentPageClient />
+    </div>
+  );
 }

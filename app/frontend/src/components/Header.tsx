@@ -39,6 +39,7 @@ export function Header() {
       </a>
       <nav
         aria-label="Primary navigation"
+        role="navigation"
         className="container mx-auto flex items-center justify-between gap-4 px-6 py-4"
       >
         <Link

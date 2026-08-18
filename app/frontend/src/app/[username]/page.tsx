@@ -222,9 +222,9 @@ export default function PublicProfile() {
 
         {/* Payment Form */}
         <div className="rounded-3xl bg-black/40 border border-white/5 backdrop-blur-2xl p-8 mb-8">
-          <h2 className="text-2xl font-black mb-6">Send Payment</h2>
+          <h2 id="payment-form-title" className="text-2xl font-black mb-6">Send Payment</h2>
 
-          <form className="space-y-4" onSubmit={(e) => e.preventDefault()}>
+          <form className="space-y-4" aria-labelledby="payment-form-title" onSubmit={(e) => e.preventDefault()}>
             <div>
               <label
                 htmlFor="payment-amount"
@@ -242,6 +242,7 @@ export default function PublicProfile() {
                 className={`w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white text-lg ${FOCUS_RING_CLASS}`}
                 placeholder="0.00"
                 step="0.01"
+                min="0"
               />
             </div>
 
