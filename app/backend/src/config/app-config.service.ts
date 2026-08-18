@@ -337,4 +337,76 @@ export class AppConfigService {
   get appBaseUrl(): string | undefined {
     return this.configService.get("APP_BASE_URL", { infer: true });
   }
+
+  /**
+   * Validates the loaded, typed configuration (dependency state).
+   *
+   * The Joi schema in `env.schema.ts` validates raw environment variables at
+   * boot; this method validates the *loaded* configuration the rest of the
+   * application depends on, plus cross-field rules that the schema cannot
+   * express (e.g. production CORS posture, signing key consistency). It is
+   * invoked from `main.ts` before the HTTP server binds.
+   *
+   * @returns `errors` must be empty for startup to proceed; `warnings` are
+   *   logged but do not block startup.
+   */
+  validate(): StartupValidationResult {
+    const errors: string[] = [];
+    const warnings: string[] = [];
+
+    // Required dependencies. Defensive: the Joi schema already enforces these,
+    // but a partially loaded ConfigService must never slip through silently.
+    if (!this.supabaseUrl) {
+      errors.push(
+        "SUPABASE_URL is missing — set it (e.g. https://<project>.supabase.co) before starting",
+      );
+    }
+    if (!this.supabaseAnonKey) {
+      errors.push(
+        "SUPABASE_ANON_KEY is missing — set it before starting",
+      );
+    }
+    if (!this.network) {
+      errors.push(
+        'NETWORK is missing — set it to "testnet" or "mainnet" before starting',
+      );
+    }
+
+    // Ingestion safety gate (mirrors the env schema check on loaded values).
+    if (this.ingestionEnabled && !this.RustAcademyContractId) {
+      errors.push(
+        "INGESTION_ENABLED is true but RustAcademy_CONTRACT_ID is not set — set the contract ID or disable ingestion",
+      );
+    }
+
+    // Payment signing consistency.
+    if (this.isPaymentSigningConfigured && !this.stellarPublicKey) {
+      warnings.push(
+        "STELLAR_SECRET_KEY is set but STELLAR_PUBLIC_KEY is not — signing works, but features that need the public key (e.g. wallet verification) may fail",
+      );
+    }
+
+    // Production CORS posture: no explicit origins and no Vercel project means
+    // every cross-origin browser request will be blocked.
+    if (
+      this.isProduction &&
+      this.corsAllowedOrigins.length === 0 &&
+      !this.corsVercelProject
+    ) {
+      warnings.push(
+        "NODE_ENV=production but CORS_ALLOWED_ORIGINS and CORS_VERCEL_PROJECT are both unset — all cross-origin browser requests will be blocked",
+      );
+    }
+
+    return { errors, warnings };
+  }
+}
+
+/**
+ * Result of {@link AppConfigService.validate}.
+ * `errors` must be empty for startup to proceed; `warnings` are advisory.
+ */
+export interface StartupValidationResult {
+  errors: string[];
+  warnings: string[];
 }

@@ -136,6 +136,16 @@ Claude
 
 All environment variables are validated at startup by `src/config/env.schema.ts` (Joi). If a required variable is missing or invalid, the process throws and refuses to start — the thrown message names the offending key.
 
+### Fail-fast startup validation
+
+Startup runs the following checks in order and aborts **before the HTTP server binds** if any of them fail:
+
+1. **Environment schema validation** — `validateEnv()` (`src/config/env.schema.ts`) validates `process.env` against the Joi schema and throws a single error listing *every* missing or invalid variable, with instructions to fix them. It runs both when `AppModule` is evaluated (`src/app.module.ts`) and again at the top of `bootstrap()` (`src/main.ts`), before the Nest application is created.
+2. **Network resolution** — `resolveNetworkSnapshot()` (`src/config/network.config.ts`) resolves the active Stellar network and its endpoints. It rejects conflicting `NETWORK`/`STELLAR_NETWORK` values and malformed `HORIZON_URL`, `SOROBAN_RPC_URL`, `SOROBAN_RPC_URLS`, or `STELLAR_EXPLORER_URL` overrides, naming the offending variable and the fix.
+3. **Dependency validation** — `AppConfigService.validate()` (`src/config/app-config.service.ts`) checks the *loaded, typed* configuration for cross-field problems (e.g. `INGESTION_ENABLED` without `RustAcademy_CONTRACT_ID`) before the HTTP server binds.
+
+All failures are logged with secrets redacted (`sanitizeErrorMessage`) and include the offending variable name plus what to do about it. Warnings — e.g. `STELLAR_SECRET_KEY` set without `STELLAR_PUBLIC_KEY`, or production with no CORS origins — are logged but do not block startup.
+
 > **Heads up:** this section previously listed `DATABASE_URL`, `REDIS_URL`, `JWT_SECRET`, `ANTHROPIC_API_KEY`, `STELLAR_HORIZON_URL`, `STELLAR_RPC_URL`, and `REWARD_POOL_SECRET_KEY`. None of these are read anywhere in `src/` — they aren't in `env.schema.ts` and setting them has no effect. The table below only lists variables the schema actually validates.
 
 ### Required
@@ -224,7 +234,7 @@ Each group has independent burst and sustained limits, configurable via environm
 
 The identity used to track a client's usage against these limits is resolved in the order set by `RATE_LIMIT_KEY_ORDER` (default `user_id,api_key,ip`) — the first available identity type in that order is used.
 
-Note: the `API_KEYS` environment variable does not affect rate limits. It is unrelated to this system — see the note in `env.schema.ts` for details, which will be corrected as part of this issue.
+Note: the `API_KEYS` environment variable does not affect rate limits. It is unrelated to this system — see the note in `env.schema.ts` for details.
 
 ## Run Locally
 
