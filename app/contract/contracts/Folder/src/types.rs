@@ -18,8 +18,12 @@ pub struct FeeRatio {
 
 impl FeeRatio {
     /// Returns `true` when the ratio is configured to pay out a non-zero share.
+    ///
+    /// A ratio is only considered active when `numerator > 0` **and**
+    /// `denominator > 0`. A numerator-only ratio is structurally invalid
+    /// and must not participate in fee distribution.
     pub fn is_active(&self) -> bool {
-        self.numerator > 0
+        self.numerator > 0 && self.denominator > 0
     }
 
     /// Validate that the ratio is usable for fee distribution.
@@ -305,10 +309,70 @@ pub struct PerAssetFeeConfig {
 
 impl PerAssetFeeConfig {
     /// Validate the configuration before persisting it.
+    ///
+    /// Checks individual ratio validity and ensures the aggregate of all
+    /// active ratios does not exceed 1.0 (i.e. cannot over-allocate fee
+    /// shares).
     pub fn validate(&self) -> Result<(), RustAcademyError> {
+        // Defense-in-depth: enforce bps bounds at the type level so the
+        // struct can never be persisted with an out-of-range fee.
+        if self.fee_bps > 10_000 || self.arbiter_bps > 10_000 {
+            return Err(RustAcademyError::InvalidAmount);
+        }
+
         self.arbiter_fee.validate()?;
         self.platform_fee.validate()?;
         self.collector_fee.validate()?;
+
+        // Reject dual-mode configuration: when explicit ratios are active,
+        // arbiter_bps must be zero. Mixing the two split mechanisms creates
+        // ambiguity about which path the router will follow and risks
+        // silent configuration drift.
+        let has_explicit_ratios = self.arbiter_fee.is_active()
+            || self.platform_fee.is_active()
+            || self.collector_fee.is_active();
+        if has_explicit_ratios && self.arbiter_bps > 0 {
+            return Err(RustAcademyError::InvalidFeeConfiguration);
+        }
+
+        // When explicit ratios are active, verify their sum does not exceed
+        // the whole. Use cross-multiplication to avoid floating-point.
+        if has_explicit_ratios {
+            // Sum = a/b + c/d + e/f
+            // Common denominator = b * d * f (could overflow for very large
+            // denominators, but u32 * u32 * u32 fits in u128).
+            let bd = (self.arbiter_fee.denominator as u128)
+                .checked_mul(self.platform_fee.denominator as u128)
+                .ok_or(RustAcademyError::InvalidFeeConfiguration)?;
+            let bdf = bd
+                .checked_mul(self.collector_fee.denominator as u128)
+                .ok_or(RustAcademyError::InvalidFeeConfiguration)?;
+
+            let a_term = (self.arbiter_fee.numerator as u128)
+                .checked_mul(self.platform_fee.denominator as u128)
+                .and_then(|v| v.checked_mul(self.collector_fee.denominator as u128))
+                .ok_or(RustAcademyError::InvalidFeeConfiguration)?;
+
+            let c_term = (self.platform_fee.numerator as u128)
+                .checked_mul(self.arbiter_fee.denominator as u128)
+                .and_then(|v| v.checked_mul(self.collector_fee.denominator as u128))
+                .ok_or(RustAcademyError::InvalidFeeConfiguration)?;
+
+            let e_term = (self.collector_fee.numerator as u128)
+                .checked_mul(self.arbiter_fee.denominator as u128)
+                .and_then(|v| v.checked_mul(self.platform_fee.denominator as u128))
+                .ok_or(RustAcademyError::InvalidFeeConfiguration)?;
+
+            let sum = a_term
+                .checked_add(c_term)
+                .and_then(|v| v.checked_add(e_term))
+                .ok_or(RustAcademyError::InvalidFeeConfiguration)?;
+
+            if sum > bdf {
+                return Err(RustAcademyError::FeeSplitExceedsTotal);
+            }
+        }
+
         Ok(())
     }
 }
