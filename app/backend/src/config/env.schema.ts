@@ -338,6 +338,58 @@ export const envSchema = Joi.object({
     .default(60000)
     .description("Webhook traffic sustained window in milliseconds"),
 
+  // Admin, auth, and payment-sensitive mutations (Issue #551). Routes are
+  // opted in explicitly via @SensitiveMutation()/@RateLimitGroupTag("sensitive") —
+  // see rate-limit.config.ts for why this needs BOTH an identity-keyed limit
+  // and a separate, always-IP-keyed limit.
+  RATE_LIMIT_SENSITIVE_BURST_LIMIT: Joi.number()
+    .integer()
+    .min(1)
+    .default(5)
+    .description("Sensitive-mutation burst request limit, per resolved identity"),
+  RATE_LIMIT_SENSITIVE_BURST_TTL_MS: Joi.number()
+    .integer()
+    .min(1000)
+    .default(10000)
+    .description("Sensitive-mutation burst window in milliseconds"),
+  RATE_LIMIT_SENSITIVE_SUSTAINED_LIMIT: Joi.number()
+    .integer()
+    .min(1)
+    .default(20)
+    .description("Sensitive-mutation sustained request limit, per resolved identity"),
+  RATE_LIMIT_SENSITIVE_SUSTAINED_TTL_MS: Joi.number()
+    .integer()
+    .min(1000)
+    .default(60000)
+    .description("Sensitive-mutation sustained window in milliseconds"),
+
+  RATE_LIMIT_SENSITIVE_IP_BURST_LIMIT: Joi.number()
+    .integer()
+    .min(1)
+    .default(15)
+    .description(
+      "Sensitive-mutation burst request limit, always keyed by IP " +
+        "(applies in addition to RATE_LIMIT_SENSITIVE_BURST_LIMIT)",
+    ),
+  RATE_LIMIT_SENSITIVE_IP_BURST_TTL_MS: Joi.number()
+    .integer()
+    .min(1000)
+    .default(10000)
+    .description("Sensitive-mutation per-IP burst window in milliseconds"),
+  RATE_LIMIT_SENSITIVE_IP_SUSTAINED_LIMIT: Joi.number()
+    .integer()
+    .min(1)
+    .default(50)
+    .description(
+      "Sensitive-mutation sustained request limit, always keyed by IP " +
+        "(applies in addition to RATE_LIMIT_SENSITIVE_SUSTAINED_LIMIT)",
+    ),
+  RATE_LIMIT_SENSITIVE_IP_SUSTAINED_TTL_MS: Joi.number()
+    .integer()
+    .min(1000)
+    .default(60000)
+    .description("Sensitive-mutation per-IP sustained window in milliseconds"),
+
   RATE_LIMIT_KEY_ORDER: Joi.string()
     .default("user_id,api_key,ip")
     .description(
@@ -585,6 +637,14 @@ export interface EnvConfig {
   RATE_LIMIT_WEBHOOKS_BURST_TTL_MS: number;
   RATE_LIMIT_WEBHOOKS_SUSTAINED_LIMIT: number;
   RATE_LIMIT_WEBHOOKS_SUSTAINED_TTL_MS: number;
+  RATE_LIMIT_SENSITIVE_BURST_LIMIT: number;
+  RATE_LIMIT_SENSITIVE_BURST_TTL_MS: number;
+  RATE_LIMIT_SENSITIVE_SUSTAINED_LIMIT: number;
+  RATE_LIMIT_SENSITIVE_SUSTAINED_TTL_MS: number;
+  RATE_LIMIT_SENSITIVE_IP_BURST_LIMIT: number;
+  RATE_LIMIT_SENSITIVE_IP_BURST_TTL_MS: number;
+  RATE_LIMIT_SENSITIVE_IP_SUSTAINED_LIMIT: number;
+  RATE_LIMIT_SENSITIVE_IP_SUSTAINED_TTL_MS: number;
   RATE_LIMIT_KEY_ORDER: string;
   SENTRY_DSN?: string;
   SENTRY_ENVIRONMENT?: string;

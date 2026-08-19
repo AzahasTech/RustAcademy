@@ -23,6 +23,7 @@ import {
 import { MarketplaceService } from './marketplace.service';
 import { ListUsernameDto, PlaceBidDto, AcceptBidDto, CancelListingDto } from './dto';
 import { MarketplaceError, MarketplaceErrorCode } from './errors';
+import { SensitiveMutation } from '../auth/decorators/sensitive-mutation.decorator';
 
 @ApiTags('marketplace')
 @Controller('marketplace')
@@ -30,6 +31,7 @@ export class MarketplaceController {
   constructor(private readonly marketplaceService: MarketplaceService) {}
 
   @Post('list')
+  @SensitiveMutation('marketplace.listing.create')
   @ApiOperation({ summary: 'List a username for sale' })
   @ApiBody({ type: ListUsernameDto })
   @ApiResponse({ status: 201, description: 'Listing created' })
@@ -91,6 +93,7 @@ export class MarketplaceController {
   }
 
   @Delete(':listingId')
+  @SensitiveMutation('marketplace.listing.cancel')
   @ApiOperation({ summary: 'Cancel a listing' })
   @ApiParam({ name: 'listingId', description: 'Listing UUID' })
   @ApiBody({ type: CancelListingDto })
@@ -113,6 +116,7 @@ export class MarketplaceController {
   }
 
   @Post(':listingId/bid')
+  @SensitiveMutation('marketplace.bid.place')
   @ApiOperation({ summary: 'Place a bid on a listing' })
   @ApiParam({ name: 'listingId', description: 'Listing UUID' })
   @ApiBody({ type: PlaceBidDto })
@@ -166,6 +170,7 @@ export class MarketplaceController {
   }
 
   @Post(':listingId/accept-bid/:bidId')
+  @SensitiveMutation('marketplace.bid.accept')
   @ApiOperation({ summary: 'Accept a bid — atomically transfers username ownership' })
   @ApiParam({ name: 'listingId', description: 'Listing UUID' })
   @ApiParam({ name: 'bidId', description: 'Bid UUID' })

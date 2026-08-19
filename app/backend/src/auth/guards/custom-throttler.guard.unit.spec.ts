@@ -9,11 +9,13 @@ import {
 import { CustomThrottlerGuard } from "./custom-throttler.guard";
 import {
   RATE_LIMIT_GROUP_METADATA_KEY,
+  SENSITIVE_IP_SEGMENT,
   THROTTLER_BURST_NAME,
   THROTTLER_SUSTAINED_NAME,
   throttlerConfig,
 } from "../../config/rate-limit.config";
 import { MetricsService } from "../../metrics/metrics.service";
+import { AuditService } from "../../audit/audit.service";
 
 type ReqShape = {
   headers?: Record<string, string>;
@@ -70,6 +72,7 @@ describe("CustomThrottlerGuard", () => {
   let guard: GuardSurface;
   let superHandleRequest: jest.SpyInstance;
   let metricsServiceRecordMock: jest.Mock;
+  let auditServiceLogMock: jest.Mock;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -105,6 +108,26 @@ describe("CustomThrottlerGuard", () => {
             ttl: 60_000,
             limit: 20,
           },
+          {
+            name: `sensitive_${THROTTLER_BURST_NAME}`,
+            ttl: 10_000,
+            limit: 5,
+          },
+          {
+            name: `sensitive_${THROTTLER_SUSTAINED_NAME}`,
+            ttl: 60_000,
+            limit: 20,
+          },
+          {
+            name: `sensitive_${SENSITIVE_IP_SEGMENT}_${THROTTLER_BURST_NAME}`,
+            ttl: 10_000,
+            limit: 15,
+          },
+          {
+            name: `sensitive_${SENSITIVE_IP_SEGMENT}_${THROTTLER_SUSTAINED_NAME}`,
+            ttl: 60_000,
+            limit: 50,
+          },
         ]),
       ],
       providers: [
@@ -115,11 +138,18 @@ describe("CustomThrottlerGuard", () => {
             recordRateLimitedRequest: jest.fn(),
           },
         },
+        {
+          provide: AuditService,
+          useValue: {
+            log: jest.fn().mockResolvedValue(undefined),
+          },
+        },
       ],
     }).compile();
 
     guard = module.get(CustomThrottlerGuard) as unknown as GuardSurface;
     metricsServiceRecordMock = module.get(MetricsService).recordRateLimitedRequest as jest.Mock;
+    auditServiceLogMock = module.get(AuditService).log as jest.Mock;
 
     superHandleRequest = jest
       .spyOn(throttlerProto, "handleRequest")
@@ -261,5 +291,122 @@ describe("CustomThrottlerGuard", () => {
 
     expect(result).toBe(true);
     expect(superHandleRequest).not.toHaveBeenCalled();
+  });
+
+  describe("sensitive group (Issue #551)", () => {
+    it("uses the identity-keyed sensitive profile for the plain sensitive throttler", async () => {
+      const handler = () => undefined;
+      Reflect.defineMetadata(RATE_LIMIT_GROUP_METADATA_KEY, "sensitive", handler);
+
+      const context = buildContext(
+        {
+          user: { id: "user-1" },
+          ip: "127.0.0.1",
+          baseUrl: "/marketplace",
+          route: { path: "/:listingId" },
+        },
+        handler,
+      );
+      const props = buildProps(context, `sensitive_${THROTTLER_BURST_NAME}`);
+
+      await guard.handleRequest(props);
+
+      expect(superHandleRequest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          limit: throttlerConfig.groups.sensitive.burst.limit,
+          ttl: throttlerConfig.groups.sensitive.burst.ttlMs,
+        }),
+      );
+      expect(await guard.getTracker({ user: { id: "user-1" }, ip: "127.0.0.1" })).toBe(
+        "user_id:user-1",
+      );
+    });
+
+    it("forces an IP tracker for the sensitive_ip throttler even when authenticated", async () => {
+      const handler = () => undefined;
+      Reflect.defineMetadata(RATE_LIMIT_GROUP_METADATA_KEY, "sensitive", handler);
+
+      const context = buildContext(
+        {
+          user: { id: "user-1" },
+          ip: "203.0.113.5",
+          baseUrl: "/marketplace",
+          route: { path: "/:listingId" },
+        },
+        handler,
+      );
+      const props = buildProps(
+        context,
+        `sensitive_${SENSITIVE_IP_SEGMENT}_${THROTTLER_BURST_NAME}`,
+      );
+
+      await guard.handleRequest(props);
+
+      expect(superHandleRequest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          limit: throttlerConfig.sensitiveIpLimits.burst.limit,
+          ttl: throttlerConfig.sensitiveIpLimits.burst.ttlMs,
+        }),
+      );
+
+      const req = context.switchToHttp().getRequest() as {
+        rateLimitContext?: { keyType: string; forcedIp?: boolean };
+      };
+      expect(req.rateLimitContext).toEqual(
+        expect.objectContaining({ keyType: "ip", forcedIp: true }),
+      );
+    });
+
+    it("records an audit log entry when the sensitive group is throttled", async () => {
+      const handler = () => undefined;
+      Reflect.defineMetadata(RATE_LIMIT_GROUP_METADATA_KEY, "sensitive", handler);
+
+      const context = buildContext(
+        {
+          user: { id: "user-9" },
+          ip: "198.51.100.7",
+          baseUrl: "/marketplace",
+          route: { path: "/:listingId/accept-bid/:bidId" },
+          method: "POST",
+        },
+        handler,
+      );
+      const props = buildProps(context, `sensitive_${THROTTLER_BURST_NAME}`);
+
+      superHandleRequest.mockRejectedValueOnce(new ThrottlerException());
+
+      await expect(guard.handleRequest(props)).rejects.toBeInstanceOf(
+        ThrottlerException,
+      );
+
+      expect(auditServiceLogMock).toHaveBeenCalledWith(
+        "user_id:user-9",
+        "rate_limit.sensitive_exceeded",
+        "/:listingId/accept-bid/:bidId",
+        expect.objectContaining({
+          method: "POST",
+          ip: "198.51.100.7",
+        }),
+        undefined,
+      );
+    });
+
+    it("does not audit-log throttled requests outside the sensitive group", async () => {
+      const context = buildContext({
+        ip: "127.0.0.1",
+        baseUrl: "/links",
+        route: { path: "/metadata" },
+        method: "GET",
+      });
+      const props = buildProps(context, `public_${THROTTLER_BURST_NAME}`);
+
+      superHandleRequest.mockRejectedValueOnce(new ThrottlerException());
+
+      await expect(guard.handleRequest(props)).rejects.toBeInstanceOf(
+        ThrottlerException,
+      );
+
+      expect(auditServiceLogMock).not.toHaveBeenCalled();
+    });
   });
 });
