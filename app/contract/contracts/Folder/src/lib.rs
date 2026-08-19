@@ -1428,6 +1428,17 @@ impl RustAcademyContract {
         storage::check_upgrade_safety(&env)
     }
 
+    /// Get the pre-upgrade invariant snapshot (read-only view).
+    ///
+    /// Returns the snapshot of critical invariants taken before the upgrade began.
+    /// Returns `None` if no snapshot exists (e.g., for legacy upgrades).
+    /// This is a read-only view; no authorization required.
+    pub fn get_invariant_snapshot(env: Env) -> Option<storage::InvariantSnapshot> {
+        env.storage()
+            .persistent()
+            .get(&storage::DataKey::PreUpgradeInvariantSnapshot)
+    }
+
     /// Return the current upgrade gate status.
     ///
     /// Combines window, in-progress, and gate-enabled flags into a single
