@@ -127,8 +127,7 @@ pub fn check_schema_compatibility(
     let current_event_schema_version = EVENT_SCHEMA_VERSION;
 
     let contract_version_compatible = requested_contract_version == current_contract_version
-        || (requested_contract_version >= LEGACY_CONTRACT_VERSION
-            && requested_contract_version <= CURRENT_CONTRACT_VERSION);
+        || requested_contract_version <= CURRENT_CONTRACT_VERSION;
 
     let event_schema_version_compatible = requested_event_schema_version == 1
         || requested_event_schema_version == current_event_schema_version;

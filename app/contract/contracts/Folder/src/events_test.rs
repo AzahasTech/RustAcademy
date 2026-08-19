@@ -145,7 +145,7 @@ fn test_cross_check_emitted_events_across_contract_operations() {
     // 5. Per asset fee set event
     let fee_cfg = PerAssetFeeConfig {
         fee_bps: 100,
-        arbiter_bps: 50,
+        arbiter_bps: 0,
         arbiter_fee: FeeRatio { numerator: 1, denominator: 2 },
         platform_fee: FeeRatio { numerator: 1, denominator: 4 },
         collector_fee: FeeRatio { numerator: 1, denominator: 4 },

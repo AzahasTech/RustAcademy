@@ -660,6 +660,10 @@ pub fn set_fee_config(
 ) -> Result<(), RustAcademyError> {
     require_any_role(env, caller, &[Role::Admin, Role::Operator])?;
 
+    if config.fee_bps > 10_000 {
+        return Err(RustAcademyError::InvalidAmount);
+    }
+
     storage::set_fee_config(env, &config);
     crate::events::publish_fee_config_changed(env, config.fee_bps);
     Ok(())
@@ -764,7 +768,7 @@ pub fn rotate_fee_collector(
 ) -> Result<u32, RustAcademyError> {
     require_admin(env, caller)?;
 
-    let next_index = fee_router::rotate_collector(env, &new_collector);
+    let next_index = fee_router::rotate_collector(env, &new_collector)?;
     publish_fee_collector_rotated(env, new_collector, next_index);
     Ok(next_index)
 }
