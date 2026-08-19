@@ -75,34 +75,38 @@ export class JobQueueService {
   async enqueue<TPayload = unknown>(
     type: JobType,
     payload: TPayload,
+    idempotencyKey?: string,
   ): Promise<string> {
-    return this.enqueueDelayed(type, payload, new Date());
+    return this.enqueueDelayed(type, payload, new Date(), idempotencyKey);
   }
 
   /**
-   * Enqueue a job for delayed execution
-   * 
-   * Creates a new job with a future scheduledAt timestamp.
-   * The job will be picked up by the JobExecutor when scheduledAt is reached.
-   * 
-   * @param type - Job type (must be registered)
-   * @param payload - Job-specific payload data
-   * @param scheduledAt - When the job should execute
-   * @returns The created job ID
-   * @throws UnregisteredJobTypeError if job type is not registered
-   * @throws PayloadValidationError if payload validation fails
-   * 
-   * **Validates: Requirements 2.2, 2.3, 2.4, 2.5, 2.6, 1.5, 15.2, 15.3**
+   * Enqueue a job for delayed execution with optional idempotency key
    */
   async enqueueDelayed<TPayload = unknown>(
     type: JobType,
     payload: TPayload,
     scheduledAt: Date,
+    idempotencyKey?: string,
   ): Promise<string> {
     // Requirement 1.5: Reject enqueue for unregistered job types
     if (!this.registry.isRegistered(type)) {
       this.logger.error(`Attempted to enqueue unregistered job type: ${type}`);
       throw new UnregisteredJobTypeError(type);
+    }
+
+    // Idempotency check: if idempotencyKey provided, check if existing non-cancelled job exists
+    if (idempotencyKey) {
+      const existing = await this.repository.findByIdempotencyKey<TPayload>(idempotencyKey);
+      if (existing && existing.status !== JobStatus.CANCELLED) {
+        this.logger.log({
+          message: 'Duplicate job submission suppressed by idempotency key',
+          jobId: existing.id,
+          type,
+          idempotencyKey,
+        });
+        return existing.id;
+      }
     }
 
     // Requirement 15.2, 15.3: Validate payload against job type schema
@@ -126,6 +130,7 @@ export class JobQueueService {
       payload,
       policy.maxAttempts,
       scheduledAt,
+      idempotencyKey,
     );
 
     // Increment jobs_enqueued_total metric
@@ -139,6 +144,7 @@ export class JobQueueService {
       message: 'Job enqueued',
       jobId: job.id,
       type,
+      idempotencyKey,
       scheduledAt: scheduledAt.toISOString(),
     });
 

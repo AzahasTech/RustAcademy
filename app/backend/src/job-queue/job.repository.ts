@@ -28,6 +28,8 @@ interface JobRow {
   completed_at: string | null;
   failure_reason: string | null;
   visibility_timeout: string | null;
+  idempotency_key?: string | null;
+  retry_metadata?: Record<string, unknown> | null;
 }
 
 /**
@@ -87,17 +89,28 @@ export class JobRepository {
     payload: TPayload,
     maxAttempts: number,
     scheduledAt: Date = new Date(),
+    idempotencyKey?: string,
+    retryMetadata?: Record<string, unknown>,
   ): Promise<Job<TPayload>> {
+    const insertRow: Record<string, unknown> = {
+      type,
+      payload: payload as unknown,
+      status: JobStatus.PENDING,
+      attempts: 0,
+      max_attempts: maxAttempts,
+      scheduled_at: scheduledAt.toISOString(),
+    };
+
+    if (idempotencyKey) {
+      insertRow.idempotency_key = idempotencyKey;
+    }
+    if (retryMetadata) {
+      insertRow.retry_metadata = retryMetadata;
+    }
+
     const { data, error } = await this.client
       .from('jobs')
-      .insert({
-        type,
-        payload: payload as unknown,
-        status: JobStatus.PENDING,
-        attempts: 0,
-        max_attempts: maxAttempts,
-        scheduled_at: scheduledAt.toISOString(),
-      })
+      .insert(insertRow)
       .select()
       .single();
 
@@ -314,6 +327,33 @@ export class JobRepository {
   }
 
   /**
+   * Find a job by its idempotency key
+   * 
+   * @param idempotencyKey - Idempotency key
+   * @returns The job, or null if not found
+   */
+  async findByIdempotencyKey<TPayload = unknown>(
+    idempotencyKey: string,
+  ): Promise<Job<TPayload> | null> {
+    const { data, error } = await this.client
+      .from('jobs')
+      .select('*')
+      .eq('idempotency_key', idempotencyKey)
+      .maybeSingle();
+
+    if (error?.code === 'PGRST116' || !data) {
+      return null;
+    }
+
+    if (error) {
+      this.logger.error(`Failed to find job by idempotency key ${idempotencyKey}: ${error.message}`, error);
+      throw error;
+    }
+
+    return this.mapRowToJob<TPayload>(data as JobRow);
+  }
+
+  /**
    * Map a database row to a Job object
    * 
    * @param row - Database row
@@ -333,6 +373,8 @@ export class JobRepository {
       completedAt: row.completed_at ? new Date(row.completed_at) : null,
       failureReason: row.failure_reason,
       visibilityTimeout: row.visibility_timeout ? new Date(row.visibility_timeout) : null,
+      idempotencyKey: row.idempotency_key ?? null,
+      retryMetadata: row.retry_metadata ?? null,
     };
   }
 }
