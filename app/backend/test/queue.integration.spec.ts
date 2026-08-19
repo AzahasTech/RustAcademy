@@ -5,15 +5,32 @@ import { JobRegistry } from '../src/job-queue/job-registry.service';
 import { CancellationStore } from '../src/job-queue/cancellation-token';
 import { JobQueueMetricsService } from '../src/job-queue/job-queue-metrics.service';
 import { SupabaseService } from '../src/supabase/supabase.service';
-import { JobType, JobStatus } from '../src/job-queue/types/job.types';
+import { JobType } from '../src/job-queue/types/job.types';
+
+interface MockJobRow {
+  id: string;
+  type: string;
+  payload: unknown;
+  status: string;
+  attempts: number;
+  max_attempts: number;
+  created_at: string;
+  scheduled_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  failure_reason: string | null;
+  visibility_timeout: string | null;
+  idempotency_key: string | null;
+  retry_metadata: Record<string, unknown> | null;
+}
 
 describe('Job Queue Integration & Idempotency', () => {
   let service: JobQueueService;
   let repository: JobRepository;
   let registry: JobRegistry;
 
-  const mockJobsStore = new Map<string, any>();
-  const mockIdempotencyStore = new Map<string, any>();
+  const mockJobsStore = new Map<string, MockJobRow>();
+  const mockIdempotencyStore = new Map<string, MockJobRow>();
 
   beforeEach(async () => {
     mockJobsStore.clear();
@@ -21,44 +38,44 @@ describe('Job Queue Integration & Idempotency', () => {
 
     const mockSupabase = {
       getClient: () => ({
-        from: (table: string) => ({
-          insert: (row: any) => ({
+        from: () => ({
+          insert: (row: Record<string, unknown>) => ({
             select: () => ({
               single: async () => {
                 const id = `job-${Date.now()}-${Math.random()}`;
-                const jobRow = {
+                const jobRow: MockJobRow = {
                   id,
-                  type: row.type,
+                  type: String(row.type),
                   payload: row.payload,
-                  status: row.status,
-                  attempts: row.attempts,
-                  max_attempts: row.max_attempts,
+                  status: String(row.status),
+                  attempts: Number(row.attempts),
+                  max_attempts: Number(row.max_attempts),
                   created_at: new Date().toISOString(),
-                  scheduled_at: row.scheduled_at,
+                  scheduled_at: String(row.scheduled_at),
                   started_at: null,
                   completed_at: null,
                   failure_reason: null,
                   visibility_timeout: null,
-                  idempotency_key: row.idempotency_key || null,
-                  retry_metadata: row.retry_metadata || null,
+                  idempotency_key: (row.idempotency_key as string) || null,
+                  retry_metadata: (row.retry_metadata as Record<string, unknown>) || null,
                 };
                 mockJobsStore.set(id, jobRow);
                 if (row.idempotency_key) {
-                  mockIdempotencyStore.set(row.idempotency_key, jobRow);
+                  mockIdempotencyStore.set(row.idempotency_key as string, jobRow);
                 }
                 return { data: jobRow, error: null };
               },
             }),
           }),
-          select: (fields?: string) => ({
-            eq: (col: string, val: any) => ({
+          select: () => ({
+            eq: (col: string, val: unknown) => ({
               maybeSingle: async () => {
                 if (col === 'id') {
-                  const job = mockJobsStore.get(val);
+                  const job = mockJobsStore.get(String(val));
                   return { data: job || null, error: job ? null : { code: 'PGRST116' } };
                 }
                 if (col === 'idempotency_key') {
-                  const job = mockIdempotencyStore.get(val);
+                  const job = mockIdempotencyStore.get(String(val));
                   return { data: job || null, error: job ? null : { code: 'PGRST116' } };
                 }
                 return { data: null, error: null };
