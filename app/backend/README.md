@@ -236,6 +236,29 @@ The identity used to track a client's usage against these limits is resolved in 
 
 Note: the `API_KEYS` environment variable does not affect rate limits. It is unrelated to this system — see the note in `env.schema.ts` for details.
 
+## Health & Dependency-Aware Readiness Endpoints
+
+The API exposes three health reporting endpoints:
+
+| Endpoint | Method | Purpose | Response |
+|---|---|---|---|
+| `/health` | `GET` | Shallow liveness check for Kubernetes/container probes. | `200 OK` `{ status: "ok", version, uptime }` |
+| `/ready` | `GET` | Dependency-aware readiness check evaluating database (Supabase), environment variables, schema migrations, job queue, Horizon, Soroban RPC, and ingestion stream lag in a single contract. | `200 OK` (when all critical dependencies are UP) or `503 Service Unavailable` (when any critical dependency is DOWN) |
+| `/status` | `GET` | Public status endpoint with ETag and Cache-Control headers (no sensitive credentials exposed). | `200 OK` `{ status: "operational", network, components: [...] }` |
+
+### Readiness Contract (`/ready`) Check Breakdown
+
+Operators can inspect readiness without cross-checking multiple endpoints:
+- `supabase`: Database ping & connection pool health (`status`, `latency`, `lastSuccess`, `error`).
+- `environment`: Critical environment configuration validation.
+- `migrations`: Access to database schema migrations tracking table.
+- `queue`: Custom job queue repository query & execution health.
+- `horizon`: Stellar Horizon node connectivity.
+- `soroban_rpc`: Soroban RPC node network passphrase & ledger query.
+- `ingestion`: Stream cursor ingestion lag in seconds.
+
+---
+
 ## Run Locally
 
 ```bash
