@@ -33,7 +33,11 @@ pub mod nonce;
 mod nonce_test;
 mod oracle;
 mod privacy;
+#[cfg(test)]
+mod reentrancy_test;
 mod legacy_privacy;
+#[cfg(test)]
+mod lifecycle_test;
 #[cfg(test)]
 mod role_test;
 mod stealth;
