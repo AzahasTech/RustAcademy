@@ -2,6 +2,7 @@ import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 
 import { EnvConfig } from "./env.schema";
+import { randomBytes } from "crypto";
 
 /**
  * Typed configuration service with centralized accessors for environment variables.
@@ -37,6 +38,43 @@ export class AppConfigService {
    */
   get supabaseAnonKey(): string {
     return this.configService.get("SUPABASE_ANON_KEY", { infer: true });
+  }
+
+  /**
+   * HMAC secret for wallet access tokens (#549).
+   *
+   * Falls back to a per-process random secret when unset. That keeps local
+   * development working, but it means access tokens do not survive a restart
+   * and are not valid across instances — set the variable in any deployment
+   * running more than one process.
+   */
+  get walletAuthAccessTokenSecret(): string {
+    return (
+      this.configService.get("WALLET_AUTH_ACCESS_TOKEN_SECRET", {
+        infer: true,
+      }) ?? randomBytes(32).toString("hex")
+    );
+  }
+
+  /** Wallet access-token lifetime in seconds. */
+  get walletAuthAccessTtlSeconds(): number {
+    return this.configService.get("WALLET_AUTH_ACCESS_TTL_SECONDS", {
+      infer: true,
+    });
+  }
+
+  /** Wallet login challenge lifetime in seconds. */
+  get walletAuthNonceTtlSeconds(): number {
+    return this.configService.get("WALLET_AUTH_NONCE_TTL_SECONDS", {
+      infer: true,
+    });
+  }
+
+  /** Absolute wallet session lifetime in seconds. */
+  get walletAuthRefreshTtlSeconds(): number {
+    return this.configService.get("WALLET_AUTH_REFRESH_TTL_SECONDS", {
+      infer: true,
+    });
   }
 
   /**

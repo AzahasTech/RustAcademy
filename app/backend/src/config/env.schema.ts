@@ -215,6 +215,35 @@ export const envSchema = Joi.object({
       "From address for SendGrid emails (e.g. noreply@ RustAcademy.to)",
     ),
 
+  // Wallet authentication (#549)
+  WALLET_AUTH_ACCESS_TOKEN_SECRET: Joi.string()
+    .empty("")
+    .min(32)
+    .optional()
+    .description(
+      "HMAC secret for wallet access tokens. Must be at least 32 characters. A random secret is generated at boot when unset, which invalidates existing access tokens on restart and does not work across multiple instances.",
+    ),
+
+  WALLET_AUTH_ACCESS_TTL_SECONDS: Joi.number()
+    .integer()
+    .min(60)
+    .default(900)
+    .description("Wallet access-token lifetime in seconds"),
+
+  WALLET_AUTH_NONCE_TTL_SECONDS: Joi.number()
+    .integer()
+    .min(30)
+    .default(300)
+    .description("How long a wallet login challenge remains valid, in seconds"),
+
+  WALLET_AUTH_REFRESH_TTL_SECONDS: Joi.number()
+    .integer()
+    .min(300)
+    .default(1209600)
+    .description(
+      "Absolute wallet session lifetime in seconds. Rotation does not extend it.",
+    ),
+
   // Expo push channel
   EXPO_ACCESS_TOKEN: Joi.string()
     .empty("")
@@ -538,6 +567,10 @@ export interface EnvConfig {
   SENDGRID_API_KEY?: string;
   SENDGRID_FROM_EMAIL?: string;
   EXPO_ACCESS_TOKEN?: string;
+  WALLET_AUTH_ACCESS_TOKEN_SECRET?: string;
+  WALLET_AUTH_ACCESS_TTL_SECONDS: number;
+  WALLET_AUTH_NONCE_TTL_SECONDS: number;
+  WALLET_AUTH_REFRESH_TTL_SECONDS: number;
   RECONCILIATION_BATCH_SIZE: number;
   API_KEYS?: string;
   RATE_LIMIT_PUBLIC_BURST_LIMIT: number;
