@@ -3,7 +3,7 @@ import { Header } from "@/components/Header";
 import { NotificationCenterProvider } from "@/components/NotificationCenterProvider";
 import { ErrorReportingShell } from "@/components/ErrorReportingShell";
 import { PWAHandler } from "@/components/PWAHandler";
-import { BRANDING, getBrandedTitle } from "@/lib/branding";
+import { BRANDING } from "@/lib/branding";
 import "./globals.css";
 
 const siteUrl =
