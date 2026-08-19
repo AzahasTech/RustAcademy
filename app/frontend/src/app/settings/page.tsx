@@ -26,12 +26,14 @@ export default function Settings() {
   const [errors, setErrors] = useState<ProfileValidationErrors>({});
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [showPreview, setShowPreview] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const { error: apiError, loading, callApi } = useApi<Profile>();
 
   useEffect(() => {
     let active = true;
     const loadData = async () => {
+      setLoadError(null);
       try {
         const data = await getProfile("john_doe");
         if (active && data) {
@@ -39,6 +41,13 @@ export default function Settings() {
         }
       } catch (err) {
         console.error("Failed to load profile settings", err);
+        if (active) {
+          setLoadError(
+            err instanceof Error
+              ? err.message
+              : "Could not load your profile. Please try again.",
+          );
+        }
       }
     };
     loadData();
@@ -169,6 +178,38 @@ export default function Settings() {
         {apiError && (
           <div className="mb-6 p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm font-semibold flex items-center gap-2 animate-in fade-in slide-in-from-top-4 duration-200">
             <span>⚠️</span> {apiError}
+          </div>
+        )}
+
+        {loadError && (
+          <div className="mb-6 p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm font-semibold flex items-center justify-between gap-3 animate-in fade-in slide-in-from-top-4 duration-200">
+            <span className="flex items-center gap-2">
+              <span>⚠️</span> {loadError}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setLoadError(null);
+                const reload = async () => {
+                  try {
+                    const data = await getProfile("john_doe");
+                    if (data) {
+                      setForm(data);
+                    }
+                  } catch (err) {
+                    setLoadError(
+                      err instanceof Error
+                        ? err.message
+                        : "Could not load your profile. Please try again.",
+                    );
+                  }
+                };
+                void reload();
+              }}
+              className="shrink-0 rounded-lg bg-red-500/20 px-3 py-1.5 text-xs font-bold text-red-300 transition hover:bg-red-500/30"
+            >
+              Retry
+            </button>
           </div>
         )}
 

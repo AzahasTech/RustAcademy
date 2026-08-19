@@ -1,6 +1,16 @@
 import i18n from "i18next";
 import { getRustAcademyApiBase } from "@/lib/api";
 
+export class AnalyticsRequestError extends Error {
+  status?: number;
+
+  constructor(message: string, status?: number) {
+    super(message);
+    this.name = "AnalyticsRequestError";
+    this.status = status;
+  }
+}
+
 export type DateRange = "24h" | "7d" | "30d" | "all";
 
 export interface VolumeDataPoint {
@@ -213,7 +223,10 @@ export async function fetchAnalytics(range: DateRange): Promise<AnalyticsData> {
   try {
     const res = await fetch(url.toString(), { method: "GET" });
     if (!res.ok) {
-      throw new Error(`Analytics request failed with status ${res.status}`);
+      throw new AnalyticsRequestError(
+        `Analytics request failed with status ${res.status}`,
+        res.status,
+      );
     }
     const report = (await res.json()) as ApiReport;
     const parsed = toUiModel(report);
@@ -244,7 +257,10 @@ export async function exportAnalyticsReport(
 
   const res = await fetch(url.toString(), { method: "GET" });
   if (!res.ok) {
-    throw new Error(`Export request failed with status ${res.status}`);
+    throw new AnalyticsRequestError(
+      `Export request failed with status ${res.status}`,
+      res.status,
+    );
   }
 
   const blob = await res.blob();

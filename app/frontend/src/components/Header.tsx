@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { LocaleSwitcher } from "@/components/LocaleSwitcher";
 import { NotificationBell } from "@/components/NotificationBell";
@@ -13,6 +14,20 @@ const NAV_LINK_CLASS =
 export function Header() {
   const { t } = useTranslation();
   const pathname = usePathname();
+  const [walletState, setWalletState] = useState<
+    "checking" | "connected" | "missing"
+  >("checking");
+
+  useEffect(() => {
+    const hasWallet =
+      Boolean(
+        typeof window !== "undefined" &&
+          (window as Window & { freighterApi?: unknown }).freighterApi,
+      ) ||
+      process.env.NODE_ENV !== "production" ||
+      process.env.NEXT_PUBLIC_API_MOCK === "true";
+    setWalletState(hasWallet ? "connected" : "missing");
+  }, []);
 
   const isActive = (href: string) =>
     pathname === href || pathname?.startsWith(`${href}/`);
@@ -85,6 +100,31 @@ export function Header() {
         </div>
 
         <div className="flex items-center gap-4">
+          <span
+            title={
+              walletState === "missing"
+                ? "No Stellar wallet detected. Install Freighter to pay."
+                : undefined
+            }
+            className={`hidden sm:flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider border ${
+              walletState === "connected"
+                ? "text-emerald-300 border-emerald-400/30 bg-emerald-500/10"
+                : "text-neutral-400 border-white/10 bg-white/5"
+            }`}
+          >
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${
+                walletState === "connected"
+                  ? "bg-emerald-400"
+                  : "bg-neutral-500"
+              }`}
+            />
+            {walletState === "connected"
+              ? "Wallet ready"
+              : walletState === "missing"
+                ? "No wallet"
+                : "…"}
+          </span>
           <NotificationBell />
           <LocaleSwitcher />
         </div>

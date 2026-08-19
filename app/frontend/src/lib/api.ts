@@ -35,6 +35,35 @@ export class ProfileNotFoundError extends Error {
 }
 
 /**
+ * Network / connectivity failure (as opposed to an API-level error response).
+ */
+export class ApiNetworkError extends Error {
+  constructor(message = "Unable to connect to the backend. Please check your connection.") {
+    super(message);
+    this.name = "ApiNetworkError";
+  }
+}
+
+/**
+ * Returns true when the error represents a connectivity failure rather than an
+ * application-level error (e.g. a 404 or validation error from the API).
+ */
+export function isNetworkError(error: unknown): boolean {
+  return (
+    error instanceof ApiNetworkError ||
+    (error instanceof TypeError && error.message.toLowerCase().includes("fetch"))
+  );
+}
+
+/** Stable, user-facing message for an unknown error. */
+export function describeApiError(error: unknown, fallback: string): string {
+  if (error instanceof Error) {
+    return error.message || fallback;
+  }
+  return fallback;
+}
+
+/**
  * Fetch a public user profile by username from the backend API.
  * 
  * @throws {ProfileNotFoundError} When the username doesn't exist or profile is private
@@ -98,7 +127,7 @@ export async function getProfile(username: string): Promise<Profile> {
     
     // Network or other errors
     if (error instanceof TypeError && error.message.includes("fetch")) {
-      throw new Error("Unable to connect to the backend. Please check your connection.");
+      throw new ApiNetworkError();
     }
     
     throw error;
