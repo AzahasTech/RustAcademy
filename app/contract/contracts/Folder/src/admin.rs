@@ -504,6 +504,12 @@ pub fn complete_upgrade(
         return Err(RustAcademyError::UpgradeNotInProgress);
     }
 
+    // Check upgrade window is still active (Issue #554)
+    // Prevent completing upgrades after the window expires
+    if !storage::is_upgrade_window_active(env) {
+        return Err(RustAcademyError::UpgradeWindowNotActive);
+    }
+
     // Verify version and hash (Issue #432 AC2)
     let pending_version =
         storage::get_pending_upgrade_version(env).ok_or(RustAcademyError::InternalError)?;
@@ -524,19 +530,20 @@ pub fn complete_upgrade(
 
     let old_version = get_version(env);
 
+    // Check for invariant drift BEFORE migrate (Issue #554)
+    // This ensures we detect drift caused by the upgrade itself
+    if let Err(_drift_error) = storage::check_invariant_drift(env) {
+        // Clear pending state on drift detection to force rollback
+        storage::clear_pending_upgrade(env);
+        return Err(RustAcademyError::InternalError);
+    }
+
     // Run migration
     let migrated_version = migrate(env, caller)?;
 
     // Ensure migrated version matches expected
     if migrated_version != pending_version && pending_version != 0 {
         return Err(RustAcademyError::InvalidContractVersion);
-    }
-
-    // Check for invariant drift (Issue #554)
-    if let Err(_drift_error) = storage::check_invariant_drift(env) {
-        // Clear pending state on drift detection to force rollback
-        storage::clear_pending_upgrade(env);
-        return Err(RustAcademyError::InternalError);
     }
 
     storage::clear_pending_upgrade(env);

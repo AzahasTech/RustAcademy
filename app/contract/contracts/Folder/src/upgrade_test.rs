@@ -1152,6 +1152,11 @@ fn upgrade_safety_gate_allows_upgrade_after_proper_initialization() {
     // Properly initialize the contract
     client.initialize(&admin);
 
+    // Advance time so the upgrade window is active
+    env.ledger().with_mut(|li| {
+        li.timestamp = 200;
+    });
+
     // Now upgrade operations should work
     client.set_upgrade_window(&admin, &1u64, &0u64);
     client.start_upgrade(&admin, &CURRENT_CONTRACT_VERSION, &dummy_hash);
