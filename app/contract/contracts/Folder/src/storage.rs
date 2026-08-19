@@ -235,6 +235,8 @@ pub enum DataKey {
     DisputeExpiryAction,
     /// Master switch for the upgrade gate. When false, all upgrades are blocked.
     UpgradeGateEnabled,
+    /// Snapshot of pre-upgrade invariants for drift detection (Issue #554).
+    PreUpgradeInvariantSnapshot,
 }
 
 // -----------------------------------------------------------------------------
@@ -379,6 +381,8 @@ pub fn clear_pending_upgrade(env: &Env) {
     env.storage()
         .persistent()
         .remove(&DataKey::PendingUpgradeVersion);
+    // Also clear invariant snapshot on upgrade completion/cancellation (Issue #554)
+    clear_invariant_snapshot(env);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -489,6 +493,90 @@ pub fn assert_post_upgrade_invariants(env: &Env) -> Result<(), &'static str> {
     // Legacy dispute votes are removed for Spent/Refunded escrows.
 
     Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Invariant Drift Detection (Issue #554)
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Snapshot of critical invariants for drift detection.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[contracttype]
+pub struct InvariantSnapshot {
+    pub fee_bps: u32,
+    pub contract_version: u32,
+    pub escrow_counter: u64,
+    pub timestamp: u64,
+}
+
+/// Snapshot pre-upgrade invariants for drift detection (Issue #554).
+///
+/// Captures the current state of critical invariants before an upgrade begins.
+/// This snapshot is used later to detect if the upgrade caused unexpected
+/// state changes (invariant drift).
+pub fn snapshot_pre_upgrade_invariants(env: &Env) -> Result<(), RustAcademyError> {
+    let fee_cfg = get_fee_config(env);
+    let version = get_contract_version(env).unwrap_or(LEGACY_CONTRACT_VERSION);
+    let counter = get_escrow_counter(env);
+    let timestamp = env.ledger().timestamp();
+
+    let snapshot = InvariantSnapshot {
+        fee_bps: fee_cfg.fee_bps,
+        contract_version: version,
+        escrow_counter: counter,
+        timestamp,
+    };
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::PreUpgradeInvariantSnapshot, &snapshot);
+
+    Ok(())
+}
+
+/// Check for invariant drift after migration (Issue #554).
+///
+/// Compares the current invariant state against the pre-upgrade snapshot
+/// to detect unexpected changes. Returns `Ok(())` if no drift is detected,
+/// or an error if drift is found.
+pub fn check_invariant_drift(env: &Env) -> Result<(), RustAcademyError> {
+    let snapshot: Option<InvariantSnapshot> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::PreUpgradeInvariantSnapshot);
+
+    let Some(pre_snapshot) = snapshot else {
+        // No snapshot exists - this is acceptable for legacy upgrades
+        return Ok(());
+    };
+
+    let current_fee_cfg = get_fee_config(env);
+    let current_version = get_contract_version(env).unwrap_or(LEGACY_CONTRACT_VERSION);
+    let current_counter = get_escrow_counter(env);
+
+    // Check for unexpected fee changes (drift)
+    if current_fee_cfg.fee_bps != pre_snapshot.fee_bps {
+        return Err(RustAcademyError::InternalError);
+    }
+
+    // Version should have increased (not decreased)
+    if current_version < pre_snapshot.contract_version {
+        return Err(RustAcademyError::InternalError);
+    }
+
+    // Escrow counter should never decrease
+    if current_counter < pre_snapshot.escrow_counter {
+        return Err(RustAcademyError::InternalError);
+    }
+
+    Ok(())
+}
+
+/// Clear the pre-upgrade invariant snapshot.
+pub fn clear_invariant_snapshot(env: &Env) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::PreUpgradeInvariantSnapshot);
 }
 
 // -----------------------------------------------------------------------------
