@@ -45,8 +45,11 @@ pub fn deployment_metadata(env: &Env) -> DeploymentMetadata {
 
 /// Return a non-mutating health summary of the contract.
 ///
-/// The status is derived from pause, emergency, and upgrade flags.  It is
+/// The status is derived from pause, emergency, and upgrade flags. It is
 /// ordered from most to least severe: emergency > upgrading > paused > healthy.
+///
+/// Operators and tooling use this inspection endpoint during incident response
+/// and emergency recovery playbooks (see `EMERGENCY_RECOVERY_PLAYBOOK.md`).
 pub fn contract_health(env: &Env) -> ContractHealth {
     let paused = storage::is_paused(env);
     let emergency_mode = storage::is_emergency_mode(env);
