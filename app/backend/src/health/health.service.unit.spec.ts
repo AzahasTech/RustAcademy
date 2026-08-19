@@ -10,13 +10,13 @@ import { SorobanRpcService } from "../transactions/soroban-rpc.service";
 
 describe("HealthService", () => {
   let service: HealthService;
-  let supabaseService: any;
-  let horizonService: any;
-  let configService: any;
-  let jobQueueService: any;
-  let jobRepository: any;
-  let cursorRepository: any;
-  let sorobanRpcService: any;
+  let supabaseService: { checkHealth: jest.Mock; getClient: jest.Mock };
+  let horizonService: { getBaseUrl: jest.Mock };
+  let configService: Record<string, unknown>;
+  let jobQueueService: Record<string, unknown>;
+  let jobRepository: { listJobs: jest.Mock };
+  let cursorRepository: { getCursor: jest.Mock };
+  let sorobanRpcService: { getNetworkPassphrase: jest.Mock };
 
   beforeEach(async () => {
     supabaseService = {
@@ -58,7 +58,7 @@ describe("HealthService", () => {
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
       status: 200,
-    }) as any;
+    }) as unknown as typeof fetch;
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
