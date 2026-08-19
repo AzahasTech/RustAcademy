@@ -77,7 +77,7 @@ describe("usePersistentState", () => {
   });
 
   it("should handle custom serialization and deserialization", () => {
-    const serialize = (val: any) => `CUSTOM-${val.count}`;
+    const serialize = (val: { count: number }) => `CUSTOM-${val.count}`;
     const deserialize = (str: string) => ({ count: parseInt(str.replace("CUSTOM-", ""), 10) });
 
     const { result } = renderHook(() =>

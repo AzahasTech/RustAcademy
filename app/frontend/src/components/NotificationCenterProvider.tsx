@@ -13,6 +13,7 @@ import {
   type StoredNotification,
 } from "@/lib/notifications";
 import { usePersistentState } from "@/hooks/usePersistentState";
+import { errorReporter } from "@/lib/errorReporter";
 
 type NotificationCenterContextValue = {
   notifications: StoredNotification[];
@@ -30,8 +31,17 @@ const NotificationCenterContext =
 function mergeStoredNotifications(
   storedNotifications: StoredNotification[],
 ): StoredNotification[] {
+  if (!Array.isArray(storedNotifications)) {
+    return sortNotifications(INITIAL_NOTIFICATIONS);
+  }
+
+  const validStored = storedNotifications.filter(
+    (item): item is StoredNotification =>
+      Boolean(item && typeof item === "object" && typeof item.id === "string"),
+  );
+
   const storedById = new Map(
-    storedNotifications.map((notification) => [notification.id, notification]),
+    validStored.map((notification) => [notification.id, notification]),
   );
 
   return sortNotifications(
@@ -68,54 +78,75 @@ export function NotificationCenterProvider({
           return mergeStoredNotifications(parsedValue);
         } catch (e) {
           console.error("Unable to parse notifications", e);
+          const captured = e instanceof Error ? e : new Error(String(e));
+          errorReporter.captureError(captured, {
+            route: typeof window !== "undefined" ? window.location.pathname : undefined,
+            codeOrigin: "NotificationCenterProvider.deserialize",
+            extra: {
+              source: "NotificationCenterProvider",
+              operation: "deserialize",
+            },
+          });
           return sortNotifications(INITIAL_NOTIFICATIONS);
         }
       },
     }
   );
 
+  const safeNotifications = useMemo(
+    () => (Array.isArray(notifications) ? notifications : []),
+    [notifications],
+  );
+
   const unreadCount = useMemo(
     () =>
-      notifications.filter((notification) => notification.readAt === null)
-        .length,
-    [notifications],
+      safeNotifications.filter(
+        (notification) => notification && notification.readAt === null,
+      ).length,
+    [safeNotifications],
   );
 
   const value = useMemo<NotificationCenterContextValue>(
     () => ({
-      notifications,
+      notifications: safeNotifications,
       unreadCount,
       hasHydrated,
       markAsRead: (id: string) => {
-        setNotifications((currentNotifications) =>
-          sortNotifications(
-            currentNotifications.map((notification) =>
-              notification.id === id && notification.readAt === null
+        setNotifications((currentNotifications) => {
+          const list = Array.isArray(currentNotifications)
+            ? currentNotifications
+            : INITIAL_NOTIFICATIONS;
+          return sortNotifications(
+            list.map((notification) =>
+              notification && notification.id === id && notification.readAt === null
                 ? {
                     ...notification,
                     readAt: new Date().toISOString(),
                   }
                 : notification,
             ),
-          ),
-        );
+          );
+        });
       },
       markAllAsRead: () => {
-        setNotifications((currentNotifications) =>
-          sortNotifications(
-            currentNotifications.map((notification) =>
-              notification.readAt === null
+        setNotifications((currentNotifications) => {
+          const list = Array.isArray(currentNotifications)
+            ? currentNotifications
+            : INITIAL_NOTIFICATIONS;
+          return sortNotifications(
+            list.map((notification) =>
+              notification && notification.readAt === null
                 ? {
                     ...notification,
                     readAt: new Date().toISOString(),
                   }
                 : notification,
             ),
-          ),
-        );
+          );
+        });
       },
     }),
-    [notifications, unreadCount, hasHydrated, setNotifications],
+    [safeNotifications, unreadCount, hasHydrated, setNotifications],
   );
 
   return (

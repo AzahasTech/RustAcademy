@@ -10,6 +10,7 @@ import { useTranslation } from "react-i18next";
 import { useApi } from "@/hooks/useApi";
 import { getProfile, saveProfile } from "@/lib/api";
 import { validateProfile, type Profile, type ProfileValidationErrors } from "@/types/profile";
+import { errorReporter } from "@/lib/errorReporter";
 
 export default function Settings() {
   const { t } = useTranslation();
@@ -25,23 +26,54 @@ export default function Settings() {
 
   const [errors, setErrors] = useState<ProfileValidationErrors>({});
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [showPreview, setShowPreview] = useState(false);
 
   const { error: apiError, loading, callApi } = useApi<Profile>();
 
+  const loadData = async () => {
+    try {
+      setLoadError(null);
+      const data = await getProfile("john_doe");
+      if (data) {
+        setForm(data);
+      }
+    } catch (err) {
+      console.error("Failed to load profile settings", err);
+      const captured = err instanceof Error ? err : new Error(String(err));
+      errorReporter.captureError(captured, {
+        route: "/settings",
+        codeOrigin: "settings.loadProfile",
+        extra: { source: "settings/page.tsx", operation: "getProfile" },
+      });
+      setLoadError(captured.message || "Failed to load profile settings");
+    }
+  };
+
   useEffect(() => {
     let active = true;
-    const loadData = async () => {
+    const fetchInitial = async () => {
       try {
+        setLoadError(null);
         const data = await getProfile("john_doe");
         if (active && data) {
           setForm(data);
         }
       } catch (err) {
         console.error("Failed to load profile settings", err);
+        const captured = err instanceof Error ? err : new Error(String(err));
+        errorReporter.captureError(captured, {
+          route: "/settings",
+          codeOrigin: "settings.loadProfile",
+          extra: { source: "settings/page.tsx", operation: "getProfile" },
+        });
+        if (active) {
+          setLoadError(captured.message || "Failed to load profile settings");
+        }
       }
     };
-    loadData();
+
+    fetchInitial();
     return () => {
       active = false;
     };
@@ -65,6 +97,12 @@ export default function Settings() {
       }, 5000);
     } catch (err) {
       console.error("Save profile error", err);
+      const captured = err instanceof Error ? err : new Error(String(err));
+      errorReporter.captureError(captured, {
+        route: "/settings",
+        codeOrigin: "settings.handleSave",
+        extra: { source: "settings/page.tsx", operation: "saveProfile" },
+      });
     }
   };
 
@@ -163,6 +201,22 @@ export default function Settings() {
         {successMessage && (
           <div className="mb-6 p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-sm font-semibold flex items-center gap-2 animate-in fade-in slide-in-from-top-4 duration-200">
             <span>✓</span> {successMessage}
+          </div>
+        )}
+
+        {loadError && (
+          <div className="mb-6 p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm font-semibold flex items-center justify-between gap-2 animate-in fade-in slide-in-from-top-4 duration-200">
+            <div className="flex items-center gap-2">
+              <span>⚠️</span>
+              <span>{loadError}</span>
+            </div>
+            <button
+              type="button"
+              onClick={loadData}
+              className="px-3 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-300 text-xs font-bold rounded-lg transition"
+            >
+              Retry
+            </button>
           </div>
         )}
 
@@ -428,11 +482,17 @@ function ProfilePreview({
   discordHandle: string;
   githubHandle: string;
 }) {
+  const [imageError, setImageError] = useState(false);
+
+  useEffect(() => {
+    setImageError(false);
+  }, [avatarUrl]);
+
   return (
     <div className="p-6 sm:p-8 text-center">
       {/* Avatar */}
       <div className="flex justify-center mb-4 sm:mb-6">
-        {avatarUrl ? (
+        {avatarUrl && !imageError ? (
           <Image
             src={avatarUrl}
             alt={username}
@@ -440,13 +500,15 @@ function ProfilePreview({
             height={96}
             className="w-20 h-20 sm:w-24 sm:h-24 rounded-full border-4 object-cover"
             style={{ borderColor: primaryColor }}
+            onError={() => setImageError(true)}
+            unoptimized
           />
         ) : (
           <div
             className="w-20 h-20 sm:w-24 sm:h-24 rounded-full border-4 flex items-center justify-center text-2xl sm:text-3xl font-black"
             style={{ borderColor: primaryColor, color: primaryColor }}
           >
-            {username[0]?.toUpperCase()}
+            {username[0]?.toUpperCase() ?? "U"}
           </div>
         )}
       </div>
