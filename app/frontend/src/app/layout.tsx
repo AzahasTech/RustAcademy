@@ -3,6 +3,8 @@ import { Header } from "@/components/Header";
 import { NotificationCenterProvider } from "@/components/NotificationCenterProvider";
 import { ErrorReportingShell } from "@/components/ErrorReportingShell";
 import { PWAHandler } from "@/components/PWAHandler";
+import { OnlineStatusProvider } from "@/lib/onlineStatus";
+import { OnlineStatusBadge } from "@/components/OnlineStatusBadge";
 import { BRANDING } from "@/lib/branding";
 import "./globals.css";
 
@@ -72,13 +74,16 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body className="bg-black text-white antialiased">
-        <ErrorReportingShell>
-          <NotificationCenterProvider>
-            <PWAHandler />
-            <Header />
-            <main className="min-h-screen pt-16">{children}</main>
-          </NotificationCenterProvider>
-        </ErrorReportingShell>
+        <OnlineStatusProvider>
+          <ErrorReportingShell>
+            <NotificationCenterProvider>
+              <PWAHandler />
+              <OnlineStatusBadge />
+              <Header />
+              <main className="min-h-screen pt-16">{children}</main>
+            </NotificationCenterProvider>
+          </ErrorReportingShell>
+        </OnlineStatusProvider>
       </body>
     </html>
   );

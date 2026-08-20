@@ -5,7 +5,7 @@ export default function manifest(): MetadataRoute.Manifest {
     id: "/",
     name: "RustAcademy",
     short_name: "RustAcademy",
-    description: "Privacy-focused payments on Stellar",
+    description: "Learn Rust, earn XLM, build Web3 on Stellar",
     lang: "en",
     dir: "ltr",
     start_url: "/",
@@ -14,6 +14,22 @@ export default function manifest(): MetadataRoute.Manifest {
     orientation: "portrait-primary",
     background_color: "#0a0a0a",
     theme_color: "#0a0a0a",
+    prefer_related_applications: false,
+    categories: ["education", "productivity", "developer"],
+    screenshots: [
+      {
+        src: "/screenshots/narrow-1.png",
+        sizes: "540x720",
+        type: "image/png",
+        form_factor: "narrow",
+      },
+      {
+        src: "/screenshots/wide-1.png",
+        sizes: "1280x720",
+        type: "image/png",
+        form_factor: "wide",
+      },
+    ],
     icons: [
       {
         src: "/icon-192.png",
