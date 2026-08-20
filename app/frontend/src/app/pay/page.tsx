@@ -87,3 +87,10 @@ export default function PayPage() {
 
   return <PaymentPageClient />;
 }
+export default function PayPage() {
+  return (
+    <div id="payment-page" aria-label="Payment page">
+      <PaymentPageClient />
+    </div>
+  );
+}

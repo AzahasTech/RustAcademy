@@ -5,7 +5,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { NetworkBadge } from "@/components/NetworkBadge";
 import { fetchAnalytics } from "@/hooks/analyticsApi";
-import { fetchListings } from "@/hooks/marketplaceApi";
 import { errorReporter } from "@/lib/errorReporter";
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
@@ -16,19 +15,22 @@ export default function Home() {
 
   useEffect(() => {
     const handlePrefetch = () => {
-      router.prefetch("/dashboard");
-      router.prefetch("/marketplace");
-      fetchListings().catch((err: unknown) =>
-        errorReporter.captureError(err instanceof Error ? err : new Error(String(err)), {
-          route: "/",
-          extra: { source: "page.tsx", operation: "fetchListings" },
-        })
-      );
+      try {
+        router.prefetch("/dashboard");
+        router.prefetch("/marketplace");
+      } catch (err) {
+        console.warn("Route prefetch failed:", err);
+      }
+
       fetchAnalytics("30d").catch((err: unknown) =>
-        errorReporter.captureError(err instanceof Error ? err : new Error(String(err)), {
-          route: "/",
-          extra: { source: "page.tsx", operation: "fetchAnalytics" },
-        })
+        errorReporter.captureError(
+          err instanceof Error ? err : new Error(String(err)),
+          {
+            route: "/",
+            codeOrigin: "page.tsx.handlePrefetch",
+            extra: { source: "page.tsx", operation: "fetchAnalytics" },
+          }
+        )
       );
     };
     const id = window.setTimeout(handlePrefetch, 250);

@@ -68,6 +68,12 @@ export interface Job<TPayload = unknown> {
   
   /** Lock expiry timestamp - prevents concurrent execution */
   visibilityTimeout: Date | null;
+
+  /** Optional idempotency key to prevent duplicate execution */
+  idempotencyKey?: string | null;
+
+  /** Structured retry metadata for debugging and operator inspection */
+  retryMetadata?: Record<string, unknown> | null;
 }
 
 /**

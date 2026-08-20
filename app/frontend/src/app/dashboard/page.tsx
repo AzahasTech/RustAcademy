@@ -8,6 +8,15 @@ import { NetworkBadge } from "@/components/NetworkBadge";
 import { useApi } from "@/hooks/useApi";
 import { useMarketplaceApi } from "@/hooks/MarketplaceApiContext";
 import type { UserBid, UserListing } from "@/hooks/marketplaceApi";
+import {
+  formatCountdown,
+  type UserBid,
+  type UserListing,
+} from "@/hooks/marketplaceApi";
+import {
+  MarketplaceApiProvider,
+  useMarketplaceApi,
+} from "@/hooks/MarketplaceApiContext";
 import { mockContractCall, mockFetch } from "@/hooks/mockApi";
 
 type ActivityItem = {
@@ -81,6 +90,7 @@ function DashboardContent() {
   const { data, error, loading, callApi } = useApi<DashboardResponse>();
   const { fetchUserBids, fetchUserListings, formatCountdown } =
     useMarketplaceApi();
+  const marketplaceApi = useMarketplaceApi();
   const [userBids, setUserBids] = useState<UserBid[]>([]);
   const [userListings, setUserListings] = useState<UserListing[]>([]);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -104,6 +114,9 @@ function DashboardContent() {
         setListingsError(err instanceof Error ? err.message : "Could not load your listings."),
       );
   }, [callApi, fetchUserBids, fetchUserListings]);
+    void marketplaceApi.fetchUserBids().then(setUserBids);
+    void marketplaceApi.fetchUserListings().then(setUserListings);
+  }, [callApi, marketplaceApi]);
 
   useEffect(() => {
     if (!statusMessage) {
@@ -635,10 +648,12 @@ function DashboardContent() {
 
 export default function Dashboard() {
   return (
-    <Suspense
-      fallback={<p className="text-neutral-200">Loading dashboard...</p>}
-    >
-      <DashboardContent />
-    </Suspense>
+    <MarketplaceApiProvider>
+      <Suspense
+        fallback={<p className="text-neutral-200">Loading dashboard...</p>}
+      >
+        <DashboardContent />
+      </Suspense>
+    </MarketplaceApiProvider>
   );
 }

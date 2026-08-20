@@ -1098,8 +1098,30 @@ pub fn dispute(env: &Env, commitment: BytesN<32>) -> Result<(),  RustAcademyErro
     let entry: EscrowEntry =
         get_escrow(env, &commitment_bytes).ok_or( RustAcademyError::CommitmentNotFound)?;
 
-    // Guard: must have an arbiter assigned
-    let arbiter = entry.arbiter.as_ref().ok_or( RustAcademyError::NoArbiter)?;
+    // Guard: must have an arbiter assigned.
+    //
+    // Two escrow shapes carry arbiters: single-arbiter escrows populate
+    // `arbiter`, while multi-sig escrows created by `deposit_with_arbiters`
+    // leave `arbiter` as `None` and populate `arbiters` + `arbiter_threshold`.
+    // Both must be able to reach `Disputed`, otherwise `vote_for_dispute` and
+    // `resolve_dispute_multi_sig` are unreachable for multi-sig escrows.
+    //
+    // The event carries a single representative arbiter. For multi-sig escrows
+    // the first listed arbiter is used, matching the deterministic fallback
+    // already applied in `dispute::resolve_expiry_recipient`.
+    let event_arbiter = match entry.arbiter.as_ref() {
+        Some(arbiter) => arbiter.clone(),
+        None => {
+            if entry.arbiter_threshold == 0 {
+                return Err( RustAcademyError::NoArbiter);
+            }
+            entry
+                .arbiters
+                .first()
+                .ok_or( RustAcademyError::NoArbiter)?
+                .clone()
+        }
+    };
 
     // Guard: escrow must be in Pending state
     if entry.status != EscrowStatus::Pending {
@@ -1113,7 +1135,7 @@ pub fn dispute(env: &Env, commitment: BytesN<32>) -> Result<(),  RustAcademyErro
     // Issue #49: snapshot timeout and default expiry action at dispute creation.
     dispute::record_dispute_expiry(env, commitment.clone());
 
-    events::publish_escrow_disputed(env, commitment.clone(), arbiter.clone());
+    events::publish_escrow_disputed(env, commitment.clone(), event_arbiter);
 
     Ok(())
 }

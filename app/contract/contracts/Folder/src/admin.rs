@@ -365,6 +365,7 @@ pub fn set_upgrade_window(
 ///
 /// **Admin only**. Emits `UpgradeStarted` event with old/new versions.
 /// Blocks if window is not active or upgrade already in progress.
+/// Protected against re-entry attacks (Issue #554).
 pub fn start_upgrade(
     env: &Env,
     caller: &Address,
@@ -372,6 +373,9 @@ pub fn start_upgrade(
     new_wasm_hash: BytesN<32>,
 ) -> Result<(), RustAcademyError> {
     require_admin(env, caller)?;
+
+    // Re-entry protection (Issue #554)
+    crate::hook::assert_not_reentrant(env)?;
 
     // Check upgrade gate master switch (Issue #318)
     if !storage::is_upgrade_gate_enabled(env) {
@@ -387,8 +391,17 @@ pub fn start_upgrade(
         return Err(RustAcademyError::UpgradeAlreadyInProgress);
     }
 
+    // Prevent repeated-init misuse (Issue #554)
+    if !storage::is_initialized(env) {
+        return Err(RustAcademyError::Unauthorized);
+    }
+
     let old_version = get_version(env);
     let (window_start, window_end) = storage::get_upgrade_window(env);
+    
+    // Snapshot pre-upgrade invariants for drift detection (Issue #554)
+    storage::snapshot_pre_upgrade_invariants(env)?;
+
     if let Some(current_hash) = storage::get_wasm_hash(env) {
         storage::set_pending_upgrade_rollback_wasm_hash(env, &current_hash);
     } else {
@@ -416,6 +429,7 @@ pub fn start_upgrade(
 ///
 /// Must be called during an active upgrade window and while an upgrade is in progress.
 /// The provided WASM hash must match the one recorded during `start_upgrade`.
+/// Protected against re-entry attacks (Issue #554).
 pub fn upgrade(
     env: &Env,
     caller: &Address,
@@ -423,10 +437,14 @@ pub fn upgrade(
 ) -> Result<(), RustAcademyError> {
     require_admin(env, caller)?;
 
+    // Re-entry protection (Issue #554)
+    crate::hook::assert_not_reentrant(env)?;
+
     if !storage::is_upgrade_in_progress(env) {
         return Err(RustAcademyError::UpgradeNotInProgress);
     }
 
+    // Strengthened window validation (Issue #554)
     if !storage::is_upgrade_window_active(env) {
         return Err(RustAcademyError::UpgradeWindowNotActive);
     }
@@ -451,8 +469,13 @@ pub fn upgrade(
 }
 
 /// Cancel a pending upgrade and clear gating state (**Admin only**).
+/// Protected against re-entry attacks (Issue #554).
 pub fn cancel_upgrade(env: &Env, caller: &Address) -> Result<(), RustAcademyError> {
     require_admin(env, caller)?;
+
+    // Re-entry protection (Issue #554)
+    crate::hook::assert_not_reentrant(env)?;
+
     if let Some(rollback_hash) = storage::get_pending_upgrade_rollback_wasm_hash(env) {
         storage::set_wasm_hash(env, &rollback_hash);
 
@@ -468,13 +491,23 @@ pub fn cancel_upgrade(env: &Env, caller: &Address) -> Result<(), RustAcademyErro
 ///
 /// **Admin only**. Must be called after `start_upgrade` and `upgrade` to finalize.
 /// Calls `migrate()` internally and re-checks invariants.
+/// Protected against re-entry attacks (Issue #554).
 pub fn complete_upgrade(
     env: &Env,
     caller: &Address,
     new_version: u32,
 ) -> Result<u32, RustAcademyError> {
+    // Re-entry protection (Issue #554)
+    crate::hook::assert_not_reentrant(env)?;
+
     if !storage::is_upgrade_in_progress(env) {
         return Err(RustAcademyError::UpgradeNotInProgress);
+    }
+
+    // Check upgrade window is still active (Issue #554)
+    // Prevent completing upgrades after the window expires
+    if !storage::is_upgrade_window_active(env) {
+        return Err(RustAcademyError::UpgradeWindowNotActive);
     }
 
     // Verify version and hash (Issue #432 AC2)
@@ -496,6 +529,14 @@ pub fn complete_upgrade(
     }
 
     let old_version = get_version(env);
+
+    // Check for invariant drift BEFORE migrate (Issue #554)
+    // This ensures we detect drift caused by the upgrade itself
+    if let Err(_drift_error) = storage::check_invariant_drift(env) {
+        // Clear pending state on drift detection to force rollback
+        storage::clear_pending_upgrade(env);
+        return Err(RustAcademyError::InternalError);
+    }
 
     // Run migration
     let migrated_version = migrate(env, caller)?;
@@ -660,6 +701,10 @@ pub fn set_fee_config(
 ) -> Result<(), RustAcademyError> {
     require_any_role(env, caller, &[Role::Admin, Role::Operator])?;
 
+    if config.fee_bps > 10_000 {
+        return Err(RustAcademyError::InvalidAmount);
+    }
+
     storage::set_fee_config(env, &config);
     crate::events::publish_fee_config_changed(env, config.fee_bps);
     Ok(())
@@ -764,7 +809,7 @@ pub fn rotate_fee_collector(
 ) -> Result<u32, RustAcademyError> {
     require_admin(env, caller)?;
 
-    let next_index = fee_router::rotate_collector(env, &new_collector);
+    let next_index = fee_router::rotate_collector(env, &new_collector)?;
     publish_fee_collector_rotated(env, new_collector, next_index);
     Ok(next_index)
 }

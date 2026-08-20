@@ -1,5 +1,7 @@
 import * as Joi from "joi";
 
+import { sanitizeErrorMessage } from "../common/utils/redaction.util";
+
 /**
  * Environment variable validation schema.
  * Validates all required and optional environment variables at startup.
@@ -213,6 +215,35 @@ export const envSchema = Joi.object({
       "From address for SendGrid emails (e.g. noreply@ RustAcademy.to)",
     ),
 
+  // Wallet authentication (#549)
+  WALLET_AUTH_ACCESS_TOKEN_SECRET: Joi.string()
+    .empty("")
+    .min(32)
+    .optional()
+    .description(
+      "HMAC secret for wallet access tokens. Must be at least 32 characters. A random secret is generated at boot when unset, which invalidates existing access tokens on restart and does not work across multiple instances.",
+    ),
+
+  WALLET_AUTH_ACCESS_TTL_SECONDS: Joi.number()
+    .integer()
+    .min(60)
+    .default(900)
+    .description("Wallet access-token lifetime in seconds"),
+
+  WALLET_AUTH_NONCE_TTL_SECONDS: Joi.number()
+    .integer()
+    .min(30)
+    .default(300)
+    .description("How long a wallet login challenge remains valid, in seconds"),
+
+  WALLET_AUTH_REFRESH_TTL_SECONDS: Joi.number()
+    .integer()
+    .min(300)
+    .default(1209600)
+    .description(
+      "Absolute wallet session lifetime in seconds. Rotation does not extend it.",
+    ),
+
   // Expo push channel
   EXPO_ACCESS_TOKEN: Joi.string()
     .empty("")
@@ -306,6 +337,58 @@ export const envSchema = Joi.object({
     .min(1000)
     .default(60000)
     .description("Webhook traffic sustained window in milliseconds"),
+
+  // Admin, auth, and payment-sensitive mutations (Issue #551). Routes are
+  // opted in explicitly via @SensitiveMutation()/@RateLimitGroupTag("sensitive") —
+  // see rate-limit.config.ts for why this needs BOTH an identity-keyed limit
+  // and a separate, always-IP-keyed limit.
+  RATE_LIMIT_SENSITIVE_BURST_LIMIT: Joi.number()
+    .integer()
+    .min(1)
+    .default(5)
+    .description("Sensitive-mutation burst request limit, per resolved identity"),
+  RATE_LIMIT_SENSITIVE_BURST_TTL_MS: Joi.number()
+    .integer()
+    .min(1000)
+    .default(10000)
+    .description("Sensitive-mutation burst window in milliseconds"),
+  RATE_LIMIT_SENSITIVE_SUSTAINED_LIMIT: Joi.number()
+    .integer()
+    .min(1)
+    .default(20)
+    .description("Sensitive-mutation sustained request limit, per resolved identity"),
+  RATE_LIMIT_SENSITIVE_SUSTAINED_TTL_MS: Joi.number()
+    .integer()
+    .min(1000)
+    .default(60000)
+    .description("Sensitive-mutation sustained window in milliseconds"),
+
+  RATE_LIMIT_SENSITIVE_IP_BURST_LIMIT: Joi.number()
+    .integer()
+    .min(1)
+    .default(15)
+    .description(
+      "Sensitive-mutation burst request limit, always keyed by IP " +
+        "(applies in addition to RATE_LIMIT_SENSITIVE_BURST_LIMIT)",
+    ),
+  RATE_LIMIT_SENSITIVE_IP_BURST_TTL_MS: Joi.number()
+    .integer()
+    .min(1000)
+    .default(10000)
+    .description("Sensitive-mutation per-IP burst window in milliseconds"),
+  RATE_LIMIT_SENSITIVE_IP_SUSTAINED_LIMIT: Joi.number()
+    .integer()
+    .min(1)
+    .default(50)
+    .description(
+      "Sensitive-mutation sustained request limit, always keyed by IP " +
+        "(applies in addition to RATE_LIMIT_SENSITIVE_SUSTAINED_LIMIT)",
+    ),
+  RATE_LIMIT_SENSITIVE_IP_SUSTAINED_TTL_MS: Joi.number()
+    .integer()
+    .min(1000)
+    .default(60000)
+    .description("Sensitive-mutation per-IP sustained window in milliseconds"),
 
   RATE_LIMIT_KEY_ORDER: Joi.string()
     .default("user_id,api_key,ip")
@@ -469,6 +552,43 @@ export const envSchema = Joi.object({
   });
 
 /**
+ * Validates an environment object against {@link envSchema} and returns the
+ * typed config with defaults applied.
+ *
+ * Fail-fast: throws a single Error listing every missing or invalid variable
+ * (with the offending key name) so operators can fix the whole environment in
+ * one pass. Raw secret values are redacted from the message.
+ *
+ * @param env - Environment variables to validate (e.g. `process.env`)
+ * @param options - Validation options. `allowUnknown` defaults to `true`,
+ *   matching the runtime `ConfigModule` configuration.
+ */
+export function validateEnv(
+  env: Record<string, unknown>,
+  options: { allowUnknown?: boolean } = {},
+): EnvConfig {
+  const { error, value } = envSchema.validate(env, {
+    abortEarly: false,
+    allowUnknown: options.allowUnknown ?? true,
+  });
+
+  if (error) {
+    const issues = error.details.map(
+      (detail) =>
+        `  - ${detail.path.join(".") || "(root)"}: ${detail.message}`,
+    );
+    const label = issues.length === 1 ? "issue" : "issues";
+    const message =
+      `Environment validation failed (${issues.length} ${label}):\n` +
+      issues.join("\n") +
+      "\nFix the listed variables in your environment (or .env file) and restart.";
+    throw new Error(sanitizeErrorMessage(message));
+  }
+
+  return value as EnvConfig;
+}
+
+/**
  * Interface for typed environment variables
  */
 export interface EnvConfig {
@@ -499,6 +619,10 @@ export interface EnvConfig {
   SENDGRID_API_KEY?: string;
   SENDGRID_FROM_EMAIL?: string;
   EXPO_ACCESS_TOKEN?: string;
+  WALLET_AUTH_ACCESS_TOKEN_SECRET?: string;
+  WALLET_AUTH_ACCESS_TTL_SECONDS: number;
+  WALLET_AUTH_NONCE_TTL_SECONDS: number;
+  WALLET_AUTH_REFRESH_TTL_SECONDS: number;
   RECONCILIATION_BATCH_SIZE: number;
   API_KEYS?: string;
   RATE_LIMIT_PUBLIC_BURST_LIMIT: number;
@@ -513,6 +637,14 @@ export interface EnvConfig {
   RATE_LIMIT_WEBHOOKS_BURST_TTL_MS: number;
   RATE_LIMIT_WEBHOOKS_SUSTAINED_LIMIT: number;
   RATE_LIMIT_WEBHOOKS_SUSTAINED_TTL_MS: number;
+  RATE_LIMIT_SENSITIVE_BURST_LIMIT: number;
+  RATE_LIMIT_SENSITIVE_BURST_TTL_MS: number;
+  RATE_LIMIT_SENSITIVE_SUSTAINED_LIMIT: number;
+  RATE_LIMIT_SENSITIVE_SUSTAINED_TTL_MS: number;
+  RATE_LIMIT_SENSITIVE_IP_BURST_LIMIT: number;
+  RATE_LIMIT_SENSITIVE_IP_BURST_TTL_MS: number;
+  RATE_LIMIT_SENSITIVE_IP_SUSTAINED_LIMIT: number;
+  RATE_LIMIT_SENSITIVE_IP_SUSTAINED_TTL_MS: number;
   RATE_LIMIT_KEY_ORDER: string;
   SENTRY_DSN?: string;
   SENTRY_ENVIRONMENT?: string;

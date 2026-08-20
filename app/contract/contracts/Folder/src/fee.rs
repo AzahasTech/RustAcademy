@@ -62,6 +62,10 @@ pub fn calculate_fee_for_token(env: &Env, token: &Address, amount: i128) -> i128
 }
 
 /// Apply a prescaled ratio to an amount.
+///
+/// Returns `Ok(0)` when `amount <= 0` or the ratio is inactive (numerator == 0).
+/// Returns `Err(InvalidFeeConfiguration)` when the ratio's denominator is zero
+/// or the scaled multiplication overflows.
 pub fn apply_fee_ratio(amount: i128, ratio: &FeeRatio) -> Result<i128, RustAcademyError> {
     if amount <= 0 || ratio.numerator == 0 {
         return Ok(0);
@@ -73,4 +77,34 @@ pub fn apply_fee_ratio(amount: i128, ratio: &FeeRatio) -> Result<i128, RustAcade
         .checked_mul(ratio.numerator as i128)
         .ok_or(RustAcademyError::InvalidFeeConfiguration)?;
     Ok(scaled / ratio.denominator as i128)
+}
+
+/// Compute the per-asset fee for `token`, falling through the priority chain.
+///
+/// When a per-asset config exists, its `fee_bps` takes precedence.
+/// Otherwise the oracle path and global static config are tried in order.
+///
+/// Always returns a non-negative value; when `amount <= 0`, returns `0`.
+pub fn calculate_fee_for_token_safe(
+    env: &Env,
+    token: &Address,
+    amount: i128,
+) -> Result<i128, RustAcademyError> {
+    if amount <= 0 {
+        return Ok(0);
+    }
+    // Per-asset override is highest priority and bypasses oracle.
+    if let Some(per_asset) = storage::get_per_asset_fee(env, token) {
+        if per_asset.fee_bps == 0 {
+            return Ok(0);
+        }
+        let fee = (amount * per_asset.fee_bps as i128) / 10000;
+        // Safety: fee cannot exceed amount because fee_bps <= 10_000.
+        if fee > amount {
+            return Err(RustAcademyError::InvalidFeeConfiguration);
+        }
+        return Ok(fee);
+    }
+    // Fall back to oracle + global bps path.
+    Ok(calculate_fee(env, amount))
 }

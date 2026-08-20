@@ -33,7 +33,11 @@ pub mod nonce;
 mod nonce_test;
 mod oracle;
 mod privacy;
+#[cfg(test)]
+mod reentrancy_test;
 mod legacy_privacy;
+#[cfg(test)]
+mod lifecycle_test;
 #[cfg(test)]
 mod role_test;
 mod stealth;
@@ -1426,6 +1430,17 @@ impl RustAcademyContract {
     /// This is a read-only view; no authorization required.
     pub fn check_upgrade_safety(env: Env) -> types::UpgradeSafetyReport {
         storage::check_upgrade_safety(&env)
+    }
+
+    /// Get the pre-upgrade invariant snapshot (read-only view).
+    ///
+    /// Returns the snapshot of critical invariants taken before the upgrade began.
+    /// Returns `None` if no snapshot exists (e.g., for legacy upgrades).
+    /// This is a read-only view; no authorization required.
+    pub fn get_invariant_snapshot(env: Env) -> Option<storage::InvariantSnapshot> {
+        env.storage()
+            .persistent()
+            .get(&storage::DataKey::PreUpgradeInvariantSnapshot)
     }
 
     /// Return the current upgrade gate status.

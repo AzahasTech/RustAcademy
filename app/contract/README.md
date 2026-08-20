@@ -333,6 +333,15 @@ The `Folder` contract exposes a stable, read-only metadata surface for tooling, 
 
 Tooling should call `check_schema_compatibility` before sending writes to avoid version mismatches.
 
+## Operational & Emergency Recovery Guides
+
+For detailed operational procedures, upgrade safety gates, fee routing, and emergency mitigation:
+- [Emergency Recovery Playbook](file:///Users/m-ibinola/.gemini/antigravity/scratch/RustAcademy/app/contract/documentation/EMERGENCY_RECOVERY_PLAYBOOK.md)
+- [Fee Configuration Guide](file:///Users/m-ibinola/.gemini/antigravity/scratch/RustAcademy/app/contract/FEE_CONFIGURATION_GUIDE.md)
+- [Upgrade Safety Gate Quick Reference](file:///Users/m-ibinola/.gemini/antigravity/scratch/RustAcademy/app/contract/UPGRADE_SAFETY_GATE_QUICK_REFERENCE.md)
+- [Upgrade Safety Gate Implementation](file:///Users/m-ibinola/.gemini/antigravity/scratch/RustAcademy/app/contract/UPGRADE_SAFETY_GATE_IMPLEMENTATION.md)
+- [Deployment Playbook](file:///Users/m-ibinola/.gemini/antigravity/scratch/RustAcademy/app/contract/documentation/deployment-playbook.md)
+
 ## Testing Requirements
 
 All contracts must maintain:
