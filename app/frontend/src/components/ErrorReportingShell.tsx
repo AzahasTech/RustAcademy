@@ -8,6 +8,9 @@ import {
   useRequestContext,
 } from "@/lib/requestContext";
 import { errorReporter } from "@/lib/errorReporter";
+import { useOnlineStatus } from "@/lib/onlineStatus";
+import { useErrorSyncOnReconnect } from "@/hooks/useErrorSyncOnReconnect";
+import { queueError } from "@/lib/errorQueue";
 
 type ErrorReportingShellProps = {
   children: React.ReactNode;
@@ -19,9 +22,45 @@ type ReportPayload = {
 
 function ErrorReportingShellContent({ children }: ErrorReportingShellProps) {
   const { requestId, correlationId } = useRequestContext();
+  const { isOnline } = useOnlineStatus();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [activeError, setActiveError] = useState<Error | null>(null);
   const [activeSummary, setActiveSummary] = useState("");
+
+  // Wrapper to submit errors with offline queueing support
+  const submitErrorPayload = async (errorPayload: unknown) => {
+    const url = process.env.NEXT_PUBLIC_ERROR_REPORTING_URL;
+    if (!url) {
+      throw new Error("Error reporting URL not configured");
+    }
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(errorPayload),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Error reporting failed: ${response.status}`);
+    }
+  };
+
+  // Sync queued errors when coming back online
+  useErrorSyncOnReconnect(submitErrorPayload);
+
+  // Wrapper for capturing and queueing errors
+  const captureErrorWithQueue = async (error: Error, context?: any) => {
+    try {
+      await errorReporter.captureError(error, context);
+    } catch (err) {
+      // If we can't report immediately, queue it
+      if (!isOnline) {
+        await queueError({ error, context });
+      }
+    }
+  };
 
   useEffect(() => {
     const handleWindowError = (event: ErrorEvent) => {
@@ -30,7 +69,7 @@ function ErrorReportingShellContent({ children }: ErrorReportingShellProps) {
           ? event.error
           : new Error(event.message || "Uncaught window error");
 
-      errorReporter.captureError(error, {
+      const context = {
         requestId,
         correlationId,
         route: typeof window !== "undefined" ? window.location.pathname : undefined,
@@ -43,6 +82,10 @@ function ErrorReportingShellContent({ children }: ErrorReportingShellProps) {
           lineno: event.lineno,
           colno: event.colno,
         },
+      };
+
+      captureErrorWithQueue(error, context).catch((err) => {
+        console.error("Failed to capture error:", err);
       });
     };
 
@@ -57,7 +100,7 @@ function ErrorReportingShellContent({ children }: ErrorReportingShellProps) {
                 : "Unhandled Promise Rejection"
             );
 
-      errorReporter.captureError(error, {
+      const context = {
         requestId,
         correlationId,
         route: typeof window !== "undefined" ? window.location.pathname : undefined,
@@ -69,6 +112,10 @@ function ErrorReportingShellContent({ children }: ErrorReportingShellProps) {
               ? JSON.stringify(reason)
               : String(reason),
         },
+      };
+
+      captureErrorWithQueue(error, context).catch((err) => {
+        console.error("Failed to capture error:", err);
       });
     };
 
@@ -79,7 +126,7 @@ function ErrorReportingShellContent({ children }: ErrorReportingShellProps) {
       window.removeEventListener("error", handleWindowError);
       window.removeEventListener("unhandledrejection", handleUnhandledRejection);
     };
-  }, [requestId, correlationId]);
+  }, [requestId, correlationId, isOnline]);
 
   const openReportModal = (error: Error, componentStack?: string) => {
     setActiveError(error);
@@ -98,7 +145,7 @@ function ErrorReportingShellContent({ children }: ErrorReportingShellProps) {
       return;
     }
 
-    await errorReporter.captureError(activeError, {
+    const context = {
       requestId,
       correlationId,
       route: typeof window !== "undefined" ? window.location.pathname : undefined,
@@ -108,7 +155,9 @@ function ErrorReportingShellContent({ children }: ErrorReportingShellProps) {
         userMessage,
         source: "report-issue-modal",
       },
-    });
+    };
+
+    await captureErrorWithQueue(activeError, context);
   };
 
   return (
@@ -127,6 +176,17 @@ function ErrorReportingShellContent({ children }: ErrorReportingShellProps) {
   );
 }
 
+/**
+ * Wraps the entire app with error reporting and request context.
+ * Should be placed at the root level, before feature providers.
+ * 
+ * Features:
+ * - Captures uncaught errors and promise rejections
+ * - Tracks request IDs and correlation IDs
+ * - Allows users to manually report errors
+ * - Redacts PII from error payloads
+ * - Queues errors while offline and retries on reconnection
+ */
 export function ErrorReportingShell({ children }: ErrorReportingShellProps) {
   return (
     <RequestContextProvider>
