@@ -114,6 +114,43 @@ try {
 
 ---
 
+## Request Correlation & Distributed Tracing
+
+Every inbound HTTP request receives a unique **correlation ID** (`x-request-id`). This ID is automatically propagated across all layers:
+
+| Layer | How it works |
+|---|---|
+| **HTTP middleware** | `CorrelationIdMiddleware` extracts or generates a UUID and sets it on the request, response headers, and `AsyncLocalStorage` context. |
+| **Logging** | `LoggingInterceptor` and `MetricsInterceptor` emit structured JSON logs containing `correlationId`. |
+| **Metrics** | Prometheus histograms/counters include the correlation ID in log output for Grafana correlation. |
+| **Job queue** | `JobQueueService.enqueue()` captures the caller's correlation ID and persists it in the `jobs` table. `JobExecutor` restores it into `AsyncLocalStorage` when the job runs. |
+| **Error responses** | `GlobalHttpExceptionFilter` includes `request_id` / `correlationId` in every error envelope. |
+| **External calls** | `@TraceExternalCall` decorator reads the correlation ID from `AsyncLocalStorage` for downstream call tracing. |
+
+### Tracing a request end-to-end
+
+1. **Client sends HTTP request** with `x-request-id: <uuid>` (optional — generated if absent).
+2. **Middleware** stores the ID in `AsyncLocalStorage` and sets response headers.
+3. **Interceptors** log structured JSON with the correlation ID on every request.
+4. **If a background job is enqueued**, the correlation ID is stored in the `jobs.correlation_id` column.
+5. **When the job executor picks up the job**, it restores the original correlation ID into `AsyncLocalStorage`, so all downstream service calls (DB, external APIs) carry the same ID.
+6. **To trace a full request lifecycle**, grep logs for the correlation ID:
+   ```bash
+   # Find all log entries for a specific request
+   grep 'correlationId.*abc-123-...' logs/combined.log
+   ```
+
+### Correlation ID headers
+
+| Header | Direction | Purpose |
+|---|---|---|
+| `x-request-id` | Request → Response | Canonical correlation identifier |
+| `x-correlation-id` | Request → Response | Legacy alias (backward compatible) |
+
+Both headers are set on every response so clients can correlate responses to requests.
+
+---
+
 ## Architecture
 
 ```text

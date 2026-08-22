@@ -13,6 +13,7 @@ import { JobRegistry } from './job-registry.service';
 import { CancellationStore } from './cancellation-token';
 import { JobQueueMetricsService } from './job-queue-metrics.service';
 import { Job, JobType, JobStatus } from './types';
+import { CorrelationContextService } from '../common/correlation/correlation-context.service';
 
 /**
  * Error thrown when attempting to enqueue a job with an unregistered type
@@ -56,6 +57,7 @@ export class JobQueueService {
     private readonly registry: JobRegistry,
     private readonly cancellationStore: CancellationStore,
     private readonly metrics: JobQueueMetricsService,
+    private readonly correlationContext: CorrelationContextService,
   ) {}
 
   /**
@@ -124,6 +126,9 @@ export class JobQueueService {
     // Get retry policy for this job type
     const policy = this.registry.getPolicy(type);
 
+    // Capture the caller's correlation ID for distributed tracing
+    const correlationId = this.correlationContext.getCorrelationId();
+
     // Requirement 2.3: Persist job with status "pending"
     const job = await this.repository.createJob<TPayload>(
       type,
@@ -131,6 +136,8 @@ export class JobQueueService {
       policy.maxAttempts,
       scheduledAt,
       idempotencyKey,
+      undefined, // retryMetadata
+      correlationId,
     );
 
     // Increment jobs_enqueued_total metric
@@ -145,6 +152,7 @@ export class JobQueueService {
       jobId: job.id,
       type,
       idempotencyKey,
+      correlationId,
       scheduledAt: scheduledAt.toISOString(),
     });
 

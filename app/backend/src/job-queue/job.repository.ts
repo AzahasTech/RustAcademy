@@ -30,6 +30,7 @@ interface JobRow {
   visibility_timeout: string | null;
   idempotency_key?: string | null;
   retry_metadata?: Record<string, unknown> | null;
+  correlation_id?: string | null;
 }
 
 /**
@@ -91,6 +92,7 @@ export class JobRepository {
     scheduledAt: Date = new Date(),
     idempotencyKey?: string,
     retryMetadata?: Record<string, unknown>,
+    correlationId?: string,
   ): Promise<Job<TPayload>> {
     const insertRow: Record<string, unknown> = {
       type,
@@ -106,6 +108,9 @@ export class JobRepository {
     }
     if (retryMetadata) {
       insertRow.retry_metadata = retryMetadata;
+    }
+    if (correlationId) {
+      insertRow.correlation_id = correlationId;
     }
 
     const { data, error } = await this.client
@@ -375,6 +380,7 @@ export class JobRepository {
       visibilityTimeout: row.visibility_timeout ? new Date(row.visibility_timeout) : null,
       idempotencyKey: row.idempotency_key ?? null,
       retryMetadata: row.retry_metadata ?? null,
+      correlationId: row.correlation_id ?? null,
     };
   }
 }
