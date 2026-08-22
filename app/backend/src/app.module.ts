@@ -23,6 +23,7 @@ import { PaymentsModule } from "./payments/payments.module";
 import { MetricsMiddleware } from "./metrics/metrics.middleware";
 import { MetricsInterceptor } from "./metrics/metrics.interceptor";
 import { CorrelationIdMiddleware } from "./common/middleware/correlation-id.middleware";
+import { CorrelationContextModule } from "./common/correlation/correlation-context.module";
 import { OrganizationContextMiddleware } from "./common/middleware/organization-context.middleware";
 import { ShadowTrafficMiddleware } from "./environment-parity/shadow-traffic.middleware";
 import { IngestionModule } from "./ingestion/ingestion.module";
@@ -56,6 +57,7 @@ const validatedEnv = validateEnv(process.env);
 
 @Module({
   imports: [
+    CorrelationContextModule,
     SentryModule,
     AppConfigModule,
     // ScheduleModule registered once here — shared by NotificationsModule and ReconciliationModule

@@ -74,6 +74,13 @@ export interface Job<TPayload = unknown> {
 
   /** Structured retry metadata for debugging and operator inspection */
   retryMetadata?: Record<string, unknown> | null;
+
+  /**
+   * Correlation ID propagated from the caller context (HTTP request or
+   * upstream job). Enables operators to trace a single request across
+   * the entire NestJS application, queue, and realtime services.
+   */
+  correlationId?: string | null;
 }
 
 /**
