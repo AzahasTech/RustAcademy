@@ -23,6 +23,7 @@ import {
 } from "./config/network.config";
 import { GlobalHttpExceptionFilter } from "./common/filters/global-http-exception.filter";
 import { mapValidationErrors } from "./common/utils/validation-error.mapper";
+import { ErrorCode } from "./common/errors";
 import { SentryExceptionFilter, SentryService } from "./sentry";
 import { MetricsService } from "./metrics/metrics.service";
 import {
@@ -130,7 +131,7 @@ async function bootstrap() {
       exceptionFactory: (errors) => {
         const mapped = mapValidationErrors(errors);
         return new BadRequestException({
-          code: "VALIDATION_ERROR",
+          code: ErrorCode.VALIDATION_ERROR,
           message: mapped.message,
           fields: mapped.fields,
         });
