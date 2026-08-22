@@ -12,24 +12,19 @@ import { AppConfigService } from "../../config";
 import { MetricsService } from "../../metrics/metrics.service";
 import { SorobanDomainException } from "../exceptions/soroban-domain.exception";
 import { sanitizeErrorMessage } from "../utils/redaction.util";
+import {
+  type ErrorEnvelope,
+  type ValidationErrorField,
+  ErrorCode,
+} from "../errors";
 
-interface ErrorResponseBody {
-  success: false;
-  error: {
-    code: string;
-    message: string | string[];
-    /** Stable alias for correlationId — used by clients to trace requests */
-    request_id?: string;
-    correlationId?: string;
-    fields?: unknown;
-    details?: unknown;
-  };
-}
+/** Re-export for downstream consumers that import from this module */
+export { type ErrorEnvelope, type ValidationErrorField, ErrorCode } from "../errors";
 
 type ValidationExceptionPayload = {
-  code: "VALIDATION_ERROR";
+  code: ErrorCode.VALIDATION_ERROR;
   message?: string;
-  fields: unknown;
+  fields: ValidationErrorField[];
 };
 
 type BusinessExceptionPayload = {
@@ -62,13 +57,13 @@ export class GlobalHttpExceptionFilter implements ExceptionFilter {
     const correlationId = request.correlationId;
 
     let status: number = HttpStatus.INTERNAL_SERVER_ERROR;
-    let code = "INTERNAL_SERVER_ERROR";
+    let code: string = ErrorCode.INTERNAL_SERVER_ERROR;
     let message: string | string[] = "An unexpected error occurred";
     let details: unknown = undefined;
 
     if (exception instanceof ThrottlerException) {
       status = HttpStatus.TOO_MANY_REQUESTS;
-      code = "RATE_LIMIT_EXCEEDED";
+      code = ErrorCode.RATE_LIMIT_EXCEEDED;
       const retryAfterSeconds = this.getRetryAfterSeconds(response);
 
       message =
@@ -121,12 +116,12 @@ export class GlobalHttpExceptionFilter implements ExceptionFilter {
           response.status(status).json({
             success: false,
             error: {
-              code: "VALIDATION_ERROR",
+              code: ErrorCode.VALIDATION_ERROR,
               message: validation.message ?? "Validation failed",
               fields: validation.fields ?? [],
               ...(correlationId ? { request_id: correlationId, correlationId } : {}),
             },
-          });
+          } satisfies ErrorEnvelope);
           return;
         }
 
@@ -151,7 +146,7 @@ export class GlobalHttpExceptionFilter implements ExceptionFilter {
         : sanitizeErrorMessage(exception.message);
     }
 
-    const body: ErrorResponseBody = {
+    const body: ErrorEnvelope = {
       success: false,
       error: {
         code,
