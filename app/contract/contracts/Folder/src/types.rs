@@ -599,12 +599,15 @@ pub enum HookEventKind {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u32)]
 pub enum Role {
-    /// Full administrative access, including role management and upgrades.
+    /// Full administrative access, including role management and routine operational config.
     Admin = 1,
     /// Operational access, such as toggling pause flags and fee config.
     Operator = 2,
     /// Authorized to resolve disputes across escrows.
     Arbiter = 3,
+    /// Governance-level authority for protocol-changing decisions (upgrades, emergency mode).
+    /// Separate from Admin to enforce dual-control and auditability.
+    Governance = 4,
 }
 
 /// Build-time manifest embedded in the WASM artifact.
