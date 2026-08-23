@@ -114,12 +114,14 @@ pub use types::FeeRatio;
 /// state-mutating method is gated accordingly. Unauthorized calls fail with a
 /// stable error code rather than silently succeeding.
 ///
-/// | Class      | Gate                                             | Methods (examples) |
-/// |------------|--------------------------------------------------|--------------------|
-/// | **Admin**  | `require_admin` (+ `require_initialized`)         | `set_paused`, `pause_features`, `set_fee_config`, `set_admin`, `migrate`, `upgrade`, `start/complete/cancel_upgrade`, `grant/revoke_role`, `rotate_fee_collector` |
-/// | **Owner**  | caller `require_auth()`                            | `deposit*`, `withdraw`, `refund`, `set_privacy`, `enable_privacy`, `stealth_withdraw` |
-/// | **Arbiter**| arbiter `require_auth()` + membership check       | `resolve_dispute`, `vote_for_dispute`, `resolve_dispute_multi_sig` |
-/// | **Public** | none (read-only / pure)                           | `get_*`, `privacy_status`, `privacy_history`, `verify_amount_commitment`, `health_check` |
+/// | Class        | Gate                                               | Methods (examples) |
+/// |--------------|----------------------------------------------------|--------------------|
+/// | **Governance**| `require_governance` (+ `require_initialized`)       | `activate_emergency_mode`, `start/upgrade/complete/cancel_upgrade`, `set_upgrade_window`, `set_upgrade_gate`, `migrate` |
+/// | **Admin**    | `require_admin` (+ `require_initialized`)           | `set_paused`, `pause_features`, `set_fee_config`, `set_admin`, `grant/revoke_role`, `rotate_fee_collector`, `register/unregister_hook`, `set_platform_wallet` |
+/// | **Operator** | `require_any_role([Admin, Operator])`               | `set_paused`, `set_fee_config`, `set_per_asset_fee`, `set_pause_flags` |
+/// | **Owner**    | caller `require_auth()`                              | `deposit*`, `withdraw`, `refund`, `set_privacy`, `enable_privacy`, `stealth_withdraw` |
+/// | **Arbiter**  | arbiter `require_auth()` + membership check         | `resolve_dispute`, `vote_for_dispute`, `resolve_dispute_multi_sig` |
+/// | **Public**   | none (read-only / pure)                             | `get_*`, `privacy_status`, `privacy_history`, `verify_amount_commitment`, `health_check` |
 ///
 /// ### Mode gating
 ///
@@ -436,9 +438,13 @@ impl RustAcademyContract {
             arbiter,
         )
     }
-    /// Activate emergency mode (irreversible). Only admin can call. Emits event.
+    /// Activate emergency mode (irreversible). **Governance only**.
+    ///
+    /// Emergency mode blocks most mutating operations. It is irreversible
+    /// and requires Governance-level authority to prevent accidental activation
+    /// by operators performing routine admin tasks.
     pub fn activate_emergency_mode(env: Env, caller: Address) -> Result<(), RustAcademyError> {
-        admin::require_admin(&env, &caller)?;
+        admin::require_governance(&env, &caller)?;
         if storage::is_emergency_mode(&env) {
             return Ok(()); // Already set
         }
@@ -881,7 +887,7 @@ impl RustAcademyContract {
         escrow::estimate_withdraw_resources_view(&env, token, salt_bytes)
     }
 
-    /// Run any pending data migrations for the current contract code (**Admin only**).
+    /// Run any pending data migrations for the current contract code (**Admin or Governance**).
     ///
     /// This entrypoint is intended to be called immediately after upgrading the contract WASM
     /// whenever the new release introduces storage or schema changes.
@@ -994,15 +1000,15 @@ impl RustAcademyContract {
         storage::get_fee_config(&env)
     }
 
-    /// Register an external hook contract to receive escrow lifecycle callbacks.
-    pub fn register_hook(env: Env, hook_contract: Address) -> Result<(), RustAcademyError> {
-        admin::guard_initialized(&env)?;
+    /// Register an external hook contract to receive escrow lifecycle callbacks (**Admin only**).
+    pub fn register_hook(env: Env, caller: Address, hook_contract: Address) -> Result<(), RustAcademyError> {
+        admin::require_admin(&env, &caller)?;
         hook::register_hook(&env, hook_contract)
     }
 
-    /// Unregister a hook contract.
-    pub fn unregister_hook(env: Env, hook_contract: Address) -> Result<(), RustAcademyError> {
-        admin::guard_initialized(&env)?;
+    /// Unregister a hook contract (**Admin only**).
+    pub fn unregister_hook(env: Env, caller: Address, hook_contract: Address) -> Result<(), RustAcademyError> {
+        admin::require_admin(&env, &caller)?;
         hook::unregister_hook(&env, hook_contract)
     }
 
@@ -1345,9 +1351,9 @@ impl RustAcademyContract {
         stealth::get_stealth_status(&env, &stealth_address)
     }
 
-    /// Upgrade the contract to a new WASM implementation (**Admin only**).
+    /// Upgrade the contract to a new WASM implementation (**Governance only**).
     ///
-    /// Caller must have the [`Role::Admin`] role and authorize.
+    /// Caller must have the [`Role::Governance`] role and authorize.
     /// The new WASM must be pre-uploaded to the network.
     /// Emits an upgrade event for audit.
     ///
@@ -1402,24 +1408,24 @@ impl RustAcademyContract {
         storage::get_upgrade_window(&env)
     }
 
-    /// Enable or disable the upgrade gate master switch (**Admin only**).
+    /// Enable or disable the upgrade gate master switch (**Governance only**).
     ///
     /// When disabled, `start_upgrade` is blocked regardless of the configured
     /// upgrade window.  Defaults to enabled when never explicitly set.
     ///
     /// # Arguments
     /// * `env` - The contract environment
-    /// * `caller` - Caller address (must be admin)
+    /// * `caller` - Caller address (must have Governance role)
     /// * `enabled` - `true` to enable upgrades, `false` to disable
     ///
     /// # Errors
-    /// * `InsufficientRole` - Caller is not admin
+    /// * `InsufficientRole` - Caller does not have Governance role
     pub fn set_upgrade_gate(
         env: Env,
         caller: Address,
         enabled: bool,
     ) -> Result<(), RustAcademyError> {
-        admin::require_admin(&env, &caller)?;
+        admin::require_governance(&env, &caller)?;
         storage::set_upgrade_gate_enabled(&env, enabled);
         Ok(())
     }
@@ -1451,7 +1457,7 @@ impl RustAcademyContract {
         metadata::upgrade_state(&env)
     }
 
-    /// Start an upgrade during the active upgrade window (**Admin only**).
+    /// Start an upgrade during the active upgrade window (**Governance only**).
     ///
     /// Sets the contract into upgrade-in-progress state and emits `UpgradeStarted` event.
     /// Must be followed by calling `upgrade()` and then `complete_upgrade()`.
@@ -1460,7 +1466,7 @@ impl RustAcademyContract {
     ///
     /// # Arguments
     /// * `env` - The contract environment
-    /// * `caller` - Caller address (must be admin)
+    /// * `caller` - Caller address (must have Governance role)
     /// * `new_version` - The target contract version
     /// * `new_wasm_hash` - The target WASM hash
     ///
@@ -1476,19 +1482,19 @@ impl RustAcademyContract {
         admin::start_upgrade(&env, &caller, new_version, new_wasm_hash)
     }
 
-    /// Cancel a pending upgrade and clear gating state (**Admin only**).
+    /// Cancel a pending upgrade and clear gating state (**Governance only**).
     pub fn cancel_upgrade(env: Env, caller: Address) -> Result<(), RustAcademyError> {
         admin::cancel_upgrade(&env, &caller)
     }
 
-    /// Complete an upgrade after WASM swap (**Admin only**).
+    /// Complete an upgrade after WASM swap (**Governance only**).
     ///
     /// Runs migration logic and validates post-upgrade invariants (Issue #432 AC2).
     /// Emits `UpgradeCompleted` event. Must be called after `start_upgrade()` and `upgrade()`.
     ///
     /// # Arguments
     /// * `env` - The contract environment
-    /// * `caller` - Caller address (must be admin)
+    /// * `caller` - Caller address (must have Governance role)
     /// * `new_version` - The target version (0 = auto-detect from migration)
     ///
     /// # Returns

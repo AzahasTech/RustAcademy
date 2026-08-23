@@ -1,5 +1,5 @@
 use crate::{errors::RustAcademyError, storage, test_context::TestContext, types::Role};
-use soroban_sdk::{testutils::Address as _, Address, Vec};
+use soroban_sdk::{testutils::Address as _, Address, Bytes, BytesN, Vec};
 
 #[test]
 fn test_initial_admin_has_role() {
@@ -438,5 +438,255 @@ fn test_guard_initialized_blocks_uninitialized_ops() {
     assert!(
         res.is_err(),
         "cleanup_escrow must fail on an uninitialized contract"
+    );
+}
+
+// ============================================================================
+// Governance role boundary tests (Issue #561)
+// ============================================================================
+
+/// Governance role can be granted and verified.
+#[test]
+fn test_governance_role_can_be_granted() {
+    let ctx = TestContext::with_admin();
+    let gov = ctx.bob.clone();
+
+    ctx.client.grant_role(&ctx.admin, &gov, &Role::Governance);
+    let roles = ctx.client.get_roles(&gov);
+    assert!(roles.contains(Role::Governance));
+}
+
+/// Governance role can be revoked by admin.
+#[test]
+fn test_governance_role_can_be_revoked() {
+    let ctx = TestContext::with_admin();
+    let gov = ctx.bob.clone();
+
+    ctx.client.grant_role(&ctx.admin, &gov, &Role::Governance);
+    ctx.client.revoke_role(&ctx.admin, &gov, &Role::Governance);
+    let roles = ctx.client.get_roles(&gov);
+    assert!(!roles.contains(Role::Governance));
+}
+
+/// Emergency mode activation requires Governance role.
+#[test]
+fn test_emergency_mode_requires_governance_role() {
+    let ctx = TestContext::with_admin(); // admin has Admin role only, not Governance
+
+    let res = ctx.client.try_activate_emergency_mode(&ctx.admin);
+    assert!(
+        matches!(res, Err(Ok(RustAcademyError::InsufficientRole))),
+        "emergency mode must require Governance role, not just Admin: {:?}",
+        res
+    );
+}
+
+/// Emergency mode activation succeeds with Governance role.
+#[test]
+fn test_emergency_mode_succeeds_with_governance_role() {
+    let ctx = TestContext::with_governance(); // admin has both Admin + Governance
+
+    let res = ctx.client.try_activate_emergency_mode(&ctx.admin);
+    assert!(res.is_ok(), "emergency mode must succeed with Governance role: {:?}", res);
+}
+
+/// start_upgrade requires Governance role, not just Admin.
+#[test]
+fn test_start_upgrade_requires_governance_role() {
+    let ctx = TestContext::with_admin();
+    ctx.client.set_upgrade_gate(&ctx.admin, &true);
+    // Set a valid upgrade window
+    let now = ctx.env.ledger().timestamp();
+    ctx.client.set_upgrade_window(&ctx.admin, &now, &(now + 3600));
+
+    let wasm_hash = BytesN::from_array(&ctx.env, &[0xaa; 32]);
+    let res = ctx.client.try_start_upgrade(&ctx.admin, &2, &wasm_hash);
+    assert!(
+        matches!(res, Err(Ok(RustAcademyError::InsufficientRole))),
+        "start_upgrade must require Governance role: {:?}",
+        res
+    );
+}
+
+/// start_upgrade succeeds with Governance role.
+#[test]
+fn test_start_upgrade_succeeds_with_governance_role() {
+    let ctx = TestContext::with_governance();
+    ctx.client.set_upgrade_gate(&ctx.admin, &true);
+    let now = ctx.env.ledger().timestamp();
+    ctx.client.set_upgrade_window(&ctx.admin, &now, &(now + 3600));
+
+    let wasm_hash = BytesN::from_array(&ctx.env, &[0xaa; 32]);
+    let res = ctx.client.try_start_upgrade(&ctx.admin, &2, &wasm_hash);
+    assert!(res.is_ok(), "start_upgrade must succeed with Governance role: {:?}", res);
+}
+
+/// cancel_upgrade requires Governance role.
+#[test]
+fn test_cancel_upgrade_requires_governance_role() {
+    let ctx = TestContext::with_admin();
+    let res = ctx.client.try_cancel_upgrade(&ctx.admin);
+    assert!(
+        matches!(res, Err(Ok(RustAcademyError::InsufficientRole))),
+        "cancel_upgrade must require Governance role: {:?}",
+        res
+    );
+}
+
+/// set_upgrade_gate requires Governance role.
+#[test]
+fn test_set_upgrade_gate_requires_governance_role() {
+    let ctx = TestContext::with_admin();
+    let res = ctx.client.try_set_upgrade_gate(&ctx.admin, &false);
+    assert!(
+        matches!(res, Err(Ok(RustAcademyError::InsufficientRole))),
+        "set_upgrade_gate must require Governance role: {:?}",
+        res
+    );
+}
+
+/// set_upgrade_gate succeeds with Governance role.
+#[test]
+fn test_set_upgrade_gate_succeeds_with_governance_role() {
+    let ctx = TestContext::with_governance();
+    let res = ctx.client.try_set_upgrade_gate(&ctx.admin, &false);
+    assert!(res.is_ok(), "set_upgrade_gate must succeed with Governance role: {:?}", res);
+}
+
+/// Operator cannot activate emergency mode.
+#[test]
+fn test_operator_cannot_activate_emergency_mode() {
+    let ctx = TestContext::with_admin();
+    let operator = ctx.alice.clone();
+    ctx.client.grant_role(&ctx.admin, &operator, &Role::Operator);
+
+    let res = ctx.client.try_activate_emergency_mode(&operator);
+    assert!(
+        matches!(res, Err(Ok(RustAcademyError::InsufficientRole))),
+        "Operator must not be able to activate emergency mode: {:?}",
+        res
+    );
+}
+
+/// Operator cannot start an upgrade.
+#[test]
+fn test_operator_cannot_start_upgrade() {
+    let ctx = TestContext::with_admin();
+    let operator = ctx.alice.clone();
+    ctx.client.grant_role(&ctx.admin, &operator, &Role::Operator);
+
+    let wasm_hash = BytesN::from_array(&ctx.env, &[0xaa; 32]);
+    let res = ctx.client.try_start_upgrade(&operator, &2, &wasm_hash);
+    assert!(
+        matches!(res, Err(Ok(RustAcademyError::InsufficientRole))),
+        "Operator must not be able to start upgrade: {:?}",
+        res
+    );
+}
+
+/// Admin-only actions (set_paused, set_platform_wallet) still work for Admin.
+#[test]
+fn test_admin_can_perform_admin_actions() {
+    let ctx = TestContext::with_admin();
+
+    // Admin can set_paused
+    let res = ctx.client.try_set_paused(&ctx.admin, &true);
+    assert!(res.is_ok(), "Admin must be able to set_paused: {:?}", res);
+    ctx.client.set_paused(&ctx.admin, &false);
+
+    // Admin can set_platform_wallet
+    let res = ctx.client.try_set_platform_wallet(&ctx.admin, &ctx.bob);
+    assert!(res.is_ok(), "Admin must be able to set_platform_wallet: {:?}", res);
+}
+
+/// Admin cannot perform governance actions without Governance role.
+#[test]
+fn test_admin_cannot_perform_governance_actions() {
+    let ctx = TestContext::with_admin(); // Admin only, no Governance
+
+    // Admin cannot activate emergency mode
+    let res = ctx.client.try_activate_emergency_mode(&ctx.admin);
+    assert!(matches!(res, Err(Ok(RustAcademyError::InsufficientRole))));
+
+    // Admin cannot start upgrade
+    let wasm_hash = BytesN::from_array(&ctx.env, &[0xaa; 32]);
+    let res = ctx.client.try_start_upgrade(&ctx.admin, &2, &wasm_hash);
+    assert!(matches!(res, Err(Ok(RustAcademyError::InsufficientRole))));
+
+    // Admin cannot set_upgrade_gate
+    let res = ctx.client.try_set_upgrade_gate(&ctx.admin, &false);
+    assert!(matches!(res, Err(Ok(RustAcademyError::InsufficientRole))));
+}
+
+/// Unauthorized user (no roles) cannot perform any privileged operations.
+#[test]
+fn test_unauthorized_user_blocked_from_admin_and_governance() {
+    let ctx = TestContext::with_admin();
+    let nobody = ctx.bob.clone(); // no roles granted
+
+    // No Admin: set_paused
+    let res = ctx.client.try_set_paused(&nobody, &true);
+    assert!(res.is_err());
+
+    // No Admin: set_fee_config
+    let res = ctx.client.try_set_fee_config(
+        &nobody,
+        &crate::types::FeeConfig {
+            fee_bps: 100,
+            schema_version: crate::types::FEE_CONFIG_SCHEMA_VERSION,
+        },
+    );
+    assert!(res.is_err());
+
+    // No Governance: activate_emergency_mode
+    let res = ctx.client.try_activate_emergency_mode(&nobody);
+    assert!(res.is_err());
+
+    // No Governance: start_upgrade
+    let wasm_hash = BytesN::from_array(&ctx.env, &[0xaa; 32]);
+    let res = ctx.client.try_start_upgrade(&nobody, &2, &wasm_hash);
+    assert!(res.is_err());
+
+    // No Admin: grant_role
+    let res = ctx.client.try_grant_role(&nobody, &ctx.alice, &Role::Operator);
+    assert!(res.is_err());
+}
+
+/// Hook registration requires Admin role.
+#[test]
+fn test_register_hook_requires_admin() {
+    let ctx = TestContext::with_admin();
+    let nobody = ctx.bob.clone();
+
+    let hook_addr = soroban_sdk::Address::generate(&ctx.env);
+    let res = ctx.client.try_register_hook(&nobody, &hook_addr);
+    assert!(
+        matches!(res, Err(Ok(RustAcademyError::InsufficientRole))),
+        "register_hook must require Admin role: {:?}",
+        res
+    );
+}
+
+/// Hook registration succeeds for Admin.
+#[test]
+fn test_register_hook_succeeds_for_admin() {
+    let ctx = TestContext::with_admin();
+    let hook_addr = soroban_sdk::Address::generate(&ctx.env);
+    let res = ctx.client.try_register_hook(&ctx.admin, &hook_addr);
+    assert!(res.is_ok(), "register_hook must succeed for Admin: {:?}", res);
+}
+
+/// Hook unregistration requires Admin role.
+#[test]
+fn test_unregister_hook_requires_admin() {
+    let ctx = TestContext::with_admin();
+    let nobody = ctx.bob.clone();
+    let hook_addr = soroban_sdk::Address::generate(&ctx.env);
+
+    let res = ctx.client.try_unregister_hook(&nobody, &hook_addr);
+    assert!(
+        matches!(res, Err(Ok(RustAcademyError::InsufficientRole))),
+        "unregister_hook must require Admin role: {:?}",
+        res
     );
 }
