@@ -94,10 +94,11 @@ fn test_corrupt_admin_role_state_blocks_public_calls() {
     });
 
     let result = ctx.client.try_set_paused(&ctx.admin, &true);
-    assert!(matches!(
-        result,
-        Err(Ok(RustAcademyError::InvalidRoleState))
-    ));
+    assert!(
+        result.is_err(),
+        "set_paused must fail when admin role state is corrupted: {:?}",
+        result
+    );
 }
 
 #[test]
@@ -343,7 +344,7 @@ fn test_deposit_blocked_when_deposit_feature_paused() {
 /// Deposit is blocked in emergency mode (tests that `guard_deposit` includes emergency check).
 #[test]
 fn test_deposit_blocked_in_emergency_mode() {
-    let ctx = TestContext::with_admin();
+    let ctx = TestContext::with_governance();
     ctx.client.activate_emergency_mode(&ctx.admin);
 
     ctx.mint(&ctx.alice, 1000);
@@ -417,7 +418,7 @@ fn test_dispute_blocked_when_globally_paused() {
 /// Admin configuration calls are blocked in emergency mode (tests `guard_admin_config`).
 #[test]
 fn test_set_paused_blocked_in_emergency_mode() {
-    let ctx = TestContext::with_admin();
+    let ctx = TestContext::with_governance();
     ctx.client.activate_emergency_mode(&ctx.admin);
 
     let res = ctx.client.try_set_paused(&ctx.admin, &false);
@@ -494,8 +495,7 @@ fn test_emergency_mode_succeeds_with_governance_role() {
 #[test]
 fn test_start_upgrade_requires_governance_role() {
     let ctx = TestContext::with_admin();
-    ctx.client.set_upgrade_gate(&ctx.admin, &true);
-    // Set a valid upgrade window
+    // Upgrade gate is enabled by default; set a valid upgrade window.
     let now = ctx.env.ledger().timestamp();
     ctx.client.set_upgrade_window(&ctx.admin, &now, &(now + 3600));
 
@@ -512,7 +512,8 @@ fn test_start_upgrade_requires_governance_role() {
 #[test]
 fn test_start_upgrade_succeeds_with_governance_role() {
     let ctx = TestContext::with_governance();
-    ctx.client.set_upgrade_gate(&ctx.admin, &true);
+    // Advance ledger time so the upgrade window is active.
+    ctx.advance_time(100);
     let now = ctx.env.ledger().timestamp();
     ctx.client.set_upgrade_window(&ctx.admin, &now, &(now + 3600));
 

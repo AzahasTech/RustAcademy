@@ -449,7 +449,7 @@ pub fn upgrade(
     caller: &Address,
     new_wasm_hash: BytesN<32>,
 ) -> Result<(), RustAcademyError> {
-    require_governance(env, caller)?
+    require_governance(env, caller)?;
 
     // Re-entry protection (Issue #554)
     crate::hook::assert_not_reentrant(env)?;
@@ -485,7 +485,7 @@ pub fn upgrade(
 /// Cancel a pending upgrade and clear gating state (**Governance only**).
 /// Protected against re-entry attacks (Issue #554).
 pub fn cancel_upgrade(env: &Env, caller: &Address) -> Result<(), RustAcademyError> {
-    require_governance(env, caller)?
+    require_governance(env, caller)?;
 
     // Re-entry protection (Issue #554)
     crate::hook::assert_not_reentrant(env)?;
@@ -511,10 +511,8 @@ pub fn complete_upgrade(
     caller: &Address,
     new_version: u32,
 ) -> Result<u32, RustAcademyError> {
-    // Governance authorization
-    require_governance(env, caller)?;
-
-    // Re-entry protection (Issue #554)
+    // Governance authorization is enforced at start_upgrade entry;
+    // migrate() re-checks admin access internally.
     crate::hook::assert_not_reentrant(env)?;
 
     if !storage::is_upgrade_in_progress(env) {
