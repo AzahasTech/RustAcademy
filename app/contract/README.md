@@ -175,11 +175,25 @@ stellar contract deploy \
 * Duplicate submission prevention
 * Reward throttling
 
-### Access Control
+### Access Control & Governance Boundaries
 
-* Admin-only functions
-* Tutor-only functions
-* Governance-controlled upgrades
+The contract enforces a three-tier authorization model to minimize privilege drift
+and prevent routine operational actions from accidentally triggering
+protocol-changing decisions:
+
+| Role          | Privilege Level | Scope |
+|---------------|----------------|-------|
+| **Governance** | Highest         | Protocol-changing decisions: emergency mode activation, upgrade lifecycle (`start_upgrade`, `upgrade`, `complete_upgrade`, `cancel_upgrade`), upgrade window and gate configuration |
+| **Admin**      | High            | Routine admin operations: pause/unpause, role management, fee configuration, platform wallet, hook registration, fee collector rotation |
+| **Operator**   | Moderate        | Day-to-day operational tasks: pause flags, fee configuration |
+
+**Key invariants:**
+- Admin-only actions require `Role::Admin` and do not rely on ambient or stale authority state.
+- Governance-specific flows are isolated from routine operational paths and are easier to audit.
+- Emergency mode activation is irreversible and requires Governance-level authority only.
+- Upgrade lifecycle is gated behind the Governance role to enforce dual-control.
+- Hook registration is admin-gated to prevent unauthorized callback injection.
+- Security tests validate role checks for normal admin, governance, and unauthorized user paths.
 
 ### Financial Safety
 

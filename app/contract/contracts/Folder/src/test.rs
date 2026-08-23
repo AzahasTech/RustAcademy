@@ -53,6 +53,7 @@ fn test_emergency_mode_blocks_risky_entry_points_and_allows_safe_paths() {
     let amount: i128 = 1000;
 
     client.initialize(&admin);
+    client.grant_role(&admin, &admin, &crate::types::Role::Governance);
 
     let sac_client = soroban_sdk::token::StellarAssetClient::new(&env, &token);
     env.mock_all_auths();

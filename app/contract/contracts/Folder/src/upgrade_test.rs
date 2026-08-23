@@ -669,6 +669,9 @@ fn seed_admin_role<'a>(
 ) ->  RustAcademyContractClient<'a> {
     let client = upgrade_to_current(env, contract_id);
     client.migrate(admin);
+    // Grant Governance role so governance-gated operations (upgrades, emergency)
+    // succeed in tests that exercise the full lifecycle.
+    client.grant_role(admin, admin, &crate::types::Role::Governance);
     client
 }
 
@@ -1151,6 +1154,7 @@ fn upgrade_safety_gate_allows_upgrade_after_proper_initialization() {
 
     // Properly initialize the contract
     client.initialize(&admin);
+    client.grant_role(&admin, &admin, &crate::types::Role::Governance);
 
     // Advance time so the upgrade window is active
     env.ledger().with_mut(|li| {

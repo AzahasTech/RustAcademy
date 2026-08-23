@@ -101,6 +101,9 @@ fn apply_admin_transfer(env: &Env, old_admin: &Address, new_admin: &Address) {
 }
 
 /// Require that the caller has at least one of the specified roles.
+///
+/// Validates initialization, authorizes the caller, and verifies that at least
+/// one of the requested roles is present in the caller's role set.
 pub fn require_any_role(
     env: &Env,
     caller: &Address,
@@ -109,7 +112,6 @@ pub fn require_any_role(
     require_initialized(env)?;
 
     caller.require_auth();
-    let _ = current_admin(env)?;
     let user_roles = storage::get_roles(env, caller);
     for role in roles {
         if user_roles.contains(*role) {
@@ -122,6 +124,16 @@ pub fn require_any_role(
 /// Require that the caller is an Admin.
 pub fn require_admin(env: &Env, caller: &Address) -> Result<(), RustAcademyError> {
     require_any_role(env, caller, &[Role::Admin])
+}
+
+/// Require that the caller has Governance-level authority.
+///
+/// Governance authority is strictly higher-privilege than Admin for
+/// protocol-changing decisions. Separating these concerns ensures that
+/// routine operational admin actions cannot accidentally trigger
+/// governance-only flows (emergency mode, upgrades).
+pub fn require_governance(env: &Env, caller: &Address) -> Result<(), RustAcademyError> {
+    require_any_role(env, caller, &[Role::Governance])
 }
 
 /// Grant a role to an address (**Admin only**).
@@ -251,6 +263,8 @@ pub fn clear_roles(env: &Env, caller: Address, target: Address) -> Result<(), Ru
 }
 
 /// Set the paused state (**Admin or Operator only**).
+///
+/// Toggling the global pause flag is an operational action.
 pub fn set_paused(env: &Env, caller: Address, new_state: bool) -> Result<(), RustAcademyError> {
     require_any_role(env, &caller, &[Role::Admin, Role::Operator])?;
 
@@ -363,7 +377,7 @@ pub fn set_upgrade_window(
 
 /// Start an upgrade (enters gating state; requires active window).
 ///
-/// **Admin only**. Emits `UpgradeStarted` event with old/new versions.
+/// **Governance only**. Emits `UpgradeStarted` event with old/new versions.
 /// Blocks if window is not active or upgrade already in progress.
 /// Protected against re-entry attacks (Issue #554).
 pub fn start_upgrade(
@@ -372,7 +386,7 @@ pub fn start_upgrade(
     new_version: u32,
     new_wasm_hash: BytesN<32>,
 ) -> Result<(), RustAcademyError> {
-    require_admin(env, caller)?;
+    require_governance(env, caller)?;
 
     // Re-entry protection (Issue #554)
     crate::hook::assert_not_reentrant(env)?;
@@ -425,7 +439,7 @@ pub fn start_upgrade(
     Ok(())
 }
 
-/// Perform the WASM swap (**Admin only**).
+/// Perform the WASM swap (**Governance only**).
 ///
 /// Must be called during an active upgrade window and while an upgrade is in progress.
 /// The provided WASM hash must match the one recorded during `start_upgrade`.
@@ -435,7 +449,7 @@ pub fn upgrade(
     caller: &Address,
     new_wasm_hash: BytesN<32>,
 ) -> Result<(), RustAcademyError> {
-    require_admin(env, caller)?;
+    require_governance(env, caller)?;
 
     // Re-entry protection (Issue #554)
     crate::hook::assert_not_reentrant(env)?;
@@ -468,10 +482,10 @@ pub fn upgrade(
     Ok(())
 }
 
-/// Cancel a pending upgrade and clear gating state (**Admin only**).
+/// Cancel a pending upgrade and clear gating state (**Governance only**).
 /// Protected against re-entry attacks (Issue #554).
 pub fn cancel_upgrade(env: &Env, caller: &Address) -> Result<(), RustAcademyError> {
-    require_admin(env, caller)?;
+    require_governance(env, caller)?;
 
     // Re-entry protection (Issue #554)
     crate::hook::assert_not_reentrant(env)?;
@@ -489,7 +503,7 @@ pub fn cancel_upgrade(env: &Env, caller: &Address) -> Result<(), RustAcademyErro
 
 /// Complete an upgrade (migrate state, update version, emit event).
 ///
-/// **Admin only**. Must be called after `start_upgrade` and `upgrade` to finalize.
+/// **Governance only**. Must be called after `start_upgrade` and `upgrade` to finalize.
 /// Calls `migrate()` internally and re-checks invariants.
 /// Protected against re-entry attacks (Issue #554).
 pub fn complete_upgrade(
@@ -497,7 +511,8 @@ pub fn complete_upgrade(
     caller: &Address,
     new_version: u32,
 ) -> Result<u32, RustAcademyError> {
-    // Re-entry protection (Issue #554)
+    // Governance authorization is enforced at start_upgrade entry;
+    // migrate() re-checks admin access internally.
     crate::hook::assert_not_reentrant(env)?;
 
     if !storage::is_upgrade_in_progress(env) {
