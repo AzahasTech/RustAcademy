@@ -237,6 +237,10 @@ pub enum DataKey {
     UpgradeGateEnabled,
     /// Snapshot of pre-upgrade invariants for drift detection (Issue #554).
     PreUpgradeInvariantSnapshot,
+    /// Tracks emitted event deduplication keys to reject duplicate/replayed
+    /// events. Keyed by a 32-byte deterministic hash of (event_type_id,
+    /// ledger_sequence, schema_version, timestamp). Stored with a 6-month TTL.
+    EventDedup(BytesN<32>),
 }
 
 // -----------------------------------------------------------------------------

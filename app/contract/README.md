@@ -215,6 +215,46 @@ The contract enforces full runtime schema validation (`validate_event_schemas`) 
 - Presence of all required replay fields.
 - Runtime cross-checking of all emitted events against `EVENT_SCHEMAS`.
 
+### Event Deduplication & Pre-Publish Validation (Issue #560)
+
+The contract provides two layers of protection against malformed payloads, duplicate events, and schema drift:
+
+#### 1. Pre-Publish Validation (`validate_emission_preconditions`)
+
+Before any event is published, `validate_emission_preconditions` validates:
+- The event type ID is non-zero and matches a registered schema.
+- The schema version matches the current `EVENT_SCHEMA_VERSION` (prevents schema drift).
+- The domain namespace is valid (`TOPIC_ADMIN`, `TOPIC_ESCROW`, etc.).
+- The event is not a duplicate of a previously emitted event.
+
+#### 2. Deterministic Event Deduplication
+
+Every emission is recorded in persistent storage using a 32-byte SHA-256 key derived from the core replay fields: `(event_type_id, ledger_sequence, schema_version, timestamp)`. This provides:
+
+- **At-most-once delivery**: identical replay field tuples are rejected.
+- **TTL-based expiry**: dedup entries expire after 6 months of ledgers, preventing unbounded storage growth.
+- **Cross-field sensitivity**: any change to any replay field produces a fresh dedup key.
+
+```rust
+// Example: check and record in a single call
+let is_fresh = events::check_and_record_event_dedup(
+    &env, event_type_id, ledger_sequence, schema_version, timestamp
+)?;
+if !is_fresh {
+    return Err(RustAcademyError::DuplicateEvent);
+}
+```
+
+#### API Reference
+
+| Function | Purpose |
+|----------|---------|
+| `validate_emission_preconditions(env, etid, version, ledger, ts)` | Full pre-publish check: schema lookup + namespace + dedup. |
+| `check_and_record_event_dedup(env, etid, ledger, version, ts)` | Atomic check-and-record for event deduplication. |
+| `compute_event_dedup_key(env, etid, ledger, version, ts)` | Derive the 32-byte dedup key from replay fields. |
+| `check_event_dedup(env, key)` | Check whether a dedup key has been recorded. |
+| `record_event_emission(env, key)` | Record a dedup key with 6-month TTL. |
+
 ---
 
 ## Fee Configuration (Fee Router v2 — Issue #305)
