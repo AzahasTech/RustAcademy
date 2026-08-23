@@ -27,6 +27,18 @@ fn setup() -> (Env, RustAcademyContractClient<'static>, Address) {
     (env, client, admin)
 }
 
+/// Setup for event dedup tests — returns (env, client) where the contract is
+/// registered so `env.as_contract` can access persistent storage.
+fn setup_event_dedup() -> (Env, RustAcademyContractClient<'static>) {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(RustAcademyContract, ());
+    let client = RustAcademyContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    (env, client)
+}
+
 #[test]
 fn test_validate_event_schemas_passes_canonical_catalog() {
     let result = events::validate_event_schemas();
@@ -300,4 +312,170 @@ fn test_schema_validation_error_cases() {
         events::validate_event_schema_entry(&s_missing_replay),
         Err("Missing mandatory event replay field in payload keys")
     );
+}
+
+// ======================================================================
+// Issue #560 — Pre-publish validation & event deduplication tests
+// ======================================================================
+
+#[test]
+fn test_pre_publish_rejects_zero_event_type_id() {
+    let (env, client) = setup_event_dedup();
+    let result = env.as_contract(&client.address, || {
+        events::validate_emission_preconditions(&env, 0, events::EVENT_SCHEMA_VERSION, 1, 1000)
+    });
+    assert_eq!(result, Err("Event type ID cannot be zero"));
+}
+
+#[test]
+fn test_pre_publish_rejects_schema_version_mismatch() {
+    let (env, client) = setup_event_dedup();
+    let result = env.as_contract(&client.address, || {
+        events::validate_emission_preconditions(&env, events::ETID_ESCROW_DEPOSITED, 999, 1, 1000)
+    });
+    assert_eq!(result, Err("Event schema version does not match current EVENT_SCHEMA_VERSION"));
+}
+
+#[test]
+fn test_pre_publish_rejects_unknown_event_type_id() {
+    let (env, client) = setup_event_dedup();
+    let result = env.as_contract(&client.address, || {
+        events::validate_emission_preconditions(&env, 99999, events::EVENT_SCHEMA_VERSION, 1, 1000)
+    });
+    assert_eq!(result, Err("No schema registered for event_type_id"));
+}
+
+#[test]
+fn test_pre_publish_accepts_valid_event() {
+    let (env, client) = setup_event_dedup();
+    let result = env.as_contract(&client.address, || {
+        events::validate_emission_preconditions(
+            &env,
+            events::ETID_ESCROW_DEPOSITED,
+            events::EVENT_SCHEMA_VERSION,
+            1,
+            1000,
+        )
+    });
+    assert!(result.is_ok(), "Expected Ok, got: {:?}", result.err());
+    let schema = result.unwrap();
+    assert_eq!(schema.name, "EscrowDeposited");
+}
+
+#[test]
+fn test_event_dedup_allows_first_emission() {
+    let (env, client) = setup_event_dedup();
+    let is_fresh = env.as_contract(&client.address, || {
+        events::check_and_record_event_dedup(&env, 1, 100, 2, 5000).unwrap()
+    });
+    assert!(is_fresh, "First emission should be fresh");
+}
+
+#[test]
+fn test_event_dedup_rejects_duplicate_emission() {
+    let (env, client) = setup_event_dedup();
+    env.as_contract(&client.address, || {
+        let is_fresh = events::check_and_record_event_dedup(&env, 1, 100, 2, 5000).unwrap();
+        assert!(is_fresh, "First emission should be fresh");
+        let is_fresh2 = events::check_and_record_event_dedup(&env, 1, 100, 2, 5000).unwrap();
+        assert!(!is_fresh2, "Second emission with same fields should be duplicate");
+    });
+}
+
+#[test]
+fn test_event_dedup_different_ledger_is_fresh() {
+    let (env, client) = setup_event_dedup();
+    env.as_contract(&client.address, || {
+        let is_fresh = events::check_and_record_event_dedup(&env, 1, 100, 2, 5000).unwrap();
+        assert!(is_fresh);
+        let is_fresh2 = events::check_and_record_event_dedup(&env, 1, 101, 2, 5001).unwrap();
+        assert!(is_fresh2, "Different ledger_sequence should be fresh");
+    });
+}
+
+#[test]
+fn test_event_dedup_different_event_type_is_fresh() {
+    let (env, client) = setup_event_dedup();
+    env.as_contract(&client.address, || {
+        let is_fresh = events::check_and_record_event_dedup(&env, 1, 100, 2, 5000).unwrap();
+        assert!(is_fresh);
+        let is_fresh2 = events::check_and_record_event_dedup(&env, 2, 100, 2, 5000).unwrap();
+        assert!(is_fresh2, "Different event_type_id should be fresh");
+    });
+}
+
+#[test]
+fn test_event_dedup_different_timestamp_is_fresh() {
+    let (env, client) = setup_event_dedup();
+    env.as_contract(&client.address, || {
+        let is_fresh = events::check_and_record_event_dedup(&env, 1, 100, 2, 5000).unwrap();
+        assert!(is_fresh);
+        let is_fresh2 = events::check_and_record_event_dedup(&env, 1, 100, 2, 5001).unwrap();
+        assert!(is_fresh2, "Different timestamp should be fresh");
+    });
+}
+
+#[test]
+fn test_pre_publish_rejects_duplicate_at_precondition_level() {
+    let (env, client) = setup_event_dedup();
+    env.as_contract(&client.address, || {
+        // First emission — succeeds.
+        let result1 = events::validate_emission_preconditions(
+            &env,
+            events::ETID_ESCROW_DEPOSITED,
+            events::EVENT_SCHEMA_VERSION,
+            1,
+            1000,
+        );
+        assert!(result1.is_ok());
+        // Record the emission.
+        let dedup_key = events::compute_event_dedup_key(
+            &env,
+            events::ETID_ESCROW_DEPOSITED,
+            1,
+            events::EVENT_SCHEMA_VERSION,
+            1000,
+        );
+        events::record_event_emission(&env, &dedup_key);
+
+        // Second emission with same params — should fail dedup.
+        let result2 = events::validate_emission_preconditions(
+            &env,
+            events::ETID_ESCROW_DEPOSITED,
+            events::EVENT_SCHEMA_VERSION,
+            1,
+            1000,
+        );
+        assert_eq!(result2, Err("Duplicate event detected — already emitted"));
+    });
+}
+
+#[test]
+fn test_schema_invalid_namespace_detected_in_validation() {
+    let s = EventSchema {
+        name: "BadNamespace",
+        event_type_id: 9999,
+        topics: &["TOPIC_INVALID", "BadNamespace"],
+        payload_keys: &["event_type_id", "ledger_sequence", "schema_version", "timestamp"],
+        schema_version: events::EVENT_SCHEMA_VERSION,
+    };
+    assert_eq!(
+        events::validate_event_schema_entry(&s),
+        Err("Invalid event topic domain namespace")
+    );
+}
+
+#[test]
+fn test_replay_fields_present_in_every_schema() {
+    // Every schema MUST carry all EVENT_REPLAY_FIELDS.
+    for schema in events::EVENT_SCHEMAS {
+        for &field in events::EVENT_REPLAY_FIELDS {
+            assert!(
+                schema.payload_keys.contains(&field),
+                "Schema {} is missing mandatory replay field '{}'",
+                schema.name,
+                field
+            );
+        }
+    }
 }
