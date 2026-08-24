@@ -74,6 +74,9 @@ export function describeApiError(error: unknown, fallback: string): string {
     return error.message || fallback;
   }
   return fallback;
+}
+
+/**
  * Read and sanitize the locally stored profile metadata for `username`.
  *
  * Recovers gracefully from malformed data:

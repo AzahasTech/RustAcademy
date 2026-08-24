@@ -2,7 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { MarketplaceListing } from "@/hooks/marketplaceApi";
+import { validateBidRequest } from "@/hooks/marketplaceApi";
 import { useMarketplaceApi } from "@/hooks/MarketplaceApiContext";
+import { errorReporter } from "@/lib/errorReporter";
 import { SigningSummary } from "./SigningSummary";
 
 type BidModalProps = {
@@ -27,8 +29,9 @@ export function BidModal({ listing, onClose, onBidSuccess }: BidModalProps) {
   const { placeBid, formatCountdown } = useMarketplaceApi();
 
   const minBid = listing ? listing.currentBid + 1 : 1;
-  const parsedAmount = parseFloat(amount);
-  const isValid = !isNaN(parsedAmount) && parsedAmount >= minBid;
+  // Strict numeric parse — "12abc" and "" must both be rejected.
+  const parsedAmount = amount.trim() === "" ? NaN : Number(amount);
+  const isValid = Number.isFinite(parsedAmount) && parsedAmount >= minBid;
 
   useEffect(() => {
     if (!listing) return;
@@ -43,17 +46,59 @@ export function BidModal({ listing, onClose, onBidSuccess }: BidModalProps) {
   }, [listing]);
 
   async function handleConfirm() {
-    if (!listing || !isValid) return;
+    // Double-submit guard: ignore re-entry while a request is in flight.
+    if (!listing || bidState === "loading") return;
+
+    // Validate the request shape before any network submission.
+    const validation = validateBidRequest(listing.username, parsedAmount, {
+      minAmount: minBid,
+    });
+    if (!validation.ok) {
+      setBidState("error");
+      setErrorMsg(validation.reason);
+      return;
+    }
+
     setBidState("loading");
     setErrorMsg("");
 
-    const result = await placeBid(listing.username, parsedAmount);
-    if (result.success) {
-      setBidState("success");
-      onBidSuccess(listing.username, parsedAmount);
-    } else {
+    try {
+      const result = await placeBid(listing.username, parsedAmount);
+      if (result.success) {
+        setBidState("success");
+        onBidSuccess(listing.username, parsedAmount);
+        return;
+      }
       setBidState("error");
       setErrorMsg(result.reason);
+      // Capture the user-visible failure for observability. Only safe fields
+      // are attached — no request bodies or wallet material.
+      void errorReporter.captureError(
+        new Error(`Bid submission failed: ${result.reason}`),
+        {
+          route: "/marketplace",
+          codeOrigin: "BidModal.placeBid",
+          extra: {
+            source: "BidModal",
+            operation: "placeBid",
+            listingId: listing.id,
+            username: listing.username,
+          },
+        },
+      );
+    } catch (err) {
+      // Defensive: providers resolve with results, but never let an
+      // unexpected rejection crash the modal.
+      setBidState("error");
+      setErrorMsg("Something went wrong while placing your bid. Please try again.");
+      void errorReporter.captureError(
+        err instanceof Error ? err : new Error(String(err)),
+        {
+          route: "/marketplace",
+          codeOrigin: "BidModal.placeBid",
+          extra: { source: "BidModal", operation: "placeBid", listingId: listing.id },
+        },
+      );
     }
   }
 

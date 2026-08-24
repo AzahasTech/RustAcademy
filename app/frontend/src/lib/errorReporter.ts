@@ -32,7 +32,11 @@ const API_KEY_RE = /\b(api[_-]?key\s*[:=]\s*)[A-Za-z0-9\-._~+/]+/gi;
 const PASSWORD_RE = /\b(password\s*[:=]\s*)[^\s"',}]+/gi;
 const SECRET_RE = /\b(secret\s*[:=]\s*)[^\s"',}]+/gi;
 
-const SENSITIVE_KEY_PATTERN = /^(password|secret|token|apiKey|api_key|api-key|privateKey|private_key|secretKey|secret_key|auth|authorization)$/i;
+/**
+ * Keys whose values must never leave the browser. Covers credentials plus
+ * wallet/transaction material that marketplace bid requests can carry.
+ */
+const SENSITIVE_KEY_PATTERN = /^(password|secret|token|apiKey|api_key|api-key|privateKey|private_key|secretKey|secret_key|auth|authorization|signature|seed|seedPhrase|mnemonic|walletSecret|wallet_secret|sessionCookie|cookie)$/i;
 
 export function extractCodeOrigin(stack?: string): string | undefined {
   if (!stack) return undefined;
