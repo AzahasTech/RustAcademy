@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { UsernameCard } from "@/components/UsernameCard";
 import { ListingDetailModal } from "@/components/ListingDetailModal";
 import type { MarketplaceListing } from "@/hooks/marketplaceApi";
@@ -110,13 +110,21 @@ function MarketplacePageContent() {
   // Stable connection-status derived from the provider
   const isConnected = realtimeApi.isConnected;
 
+  // Monotonic id guarding against stale responses: when a retry is triggered
+  // while a previous request is still in flight, only the newest request may
+  // commit listings, error, or loading state.
+  const loadRequestIdRef = useRef(0);
+
   const loadListings = useCallback(async () => {
+    const requestId = ++loadRequestIdRef.current;
     try {
       setLoading(true);
       setError(null);
       const data = await marketplaceApi.fetchListings();
-      setListings(data ?? []);
+      if (requestId !== loadRequestIdRef.current) return;
+      setListings(Array.isArray(data) ? data : []);
     } catch (err) {
+      if (requestId !== loadRequestIdRef.current) return;
       const captured = err instanceof Error ? err : new Error(String(err));
       setError(captured.message || "Failed to load marketplace listings");
       errorReporter.captureError(captured, {
@@ -125,7 +133,9 @@ function MarketplacePageContent() {
         extra: { source: "MarketplacePageContent", operation: "fetchListings" },
       });
     } finally {
-      setLoading(false);
+      if (requestId === loadRequestIdRef.current) {
+        setLoading(false);
+      }
     }
   }, [marketplaceApi]);
 
@@ -317,14 +327,15 @@ function MarketplacePageContent() {
             <button
               type="button"
               onClick={loadListings}
-              className="px-3 py-1.5 bg-red-500/20 hover:bg-red-500/30 text-red-300 text-xs font-bold rounded-lg transition"
+              disabled={loading}
+              className="px-3 py-1.5 bg-red-500/20 hover:bg-red-500/30 disabled:opacity-50 disabled:cursor-not-allowed text-red-300 text-xs font-bold rounded-lg transition"
             >
               Retry
             </button>
           </div>
         )}
 
-        {!loading && !error && <StatsBar listings={listings} />}
+        {listings.length > 0 && !error && <StatsBar listings={listings} />}
 
         {/* ── CONTROLS ─────────────────────────────── */}
         <div className="flex flex-col gap-4 mb-8">
@@ -420,7 +431,7 @@ function MarketplacePageContent() {
         </div>
 
         {/* ── RESULTS COUNT ─────────────────────────── */}
-        {!loading && !error && (
+        {listings.length > 0 && !error && (
           <p className="text-xs text-neutral-600 font-bold uppercase tracking-widest mb-6">
             {filtered.length} listing{filtered.length !== 1 ? "s" : ""} found
             {search && ` for "${search}"`}
@@ -428,6 +439,8 @@ function MarketplacePageContent() {
         )}
 
         {/* ── GRID ─────────────────────────────────── */}
+        {/* Full-page failure only when nothing is on screen yet; with cached
+            listings the inline banner above handles retry without wiping data. */}
         {error && listings.length === 0 ? (
           <div className="py-20 text-center space-y-6">
             <div className="text-5xl mb-2">⚠️</div>
@@ -443,13 +456,14 @@ function MarketplacePageContent() {
               <button
                 type="button"
                 onClick={loadListings}
-                className="px-6 py-3 bg-indigo-500 hover:bg-indigo-600 font-bold text-sm text-white rounded-xl transition active:scale-95 shadow-lg shadow-indigo-500/20"
+                disabled={loading}
+                className="px-6 py-3 bg-indigo-500 hover:bg-indigo-600 disabled:opacity-50 disabled:cursor-not-allowed font-bold text-sm text-white rounded-xl transition active:scale-95 shadow-lg shadow-indigo-500/20"
               >
                 Try again
               </button>
             </div>
           </div>
-        ) : loading ? (
+        ) : loading && listings.length === 0 ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
             {Array.from({ length: 6 }).map((_, i) => (
               <div
