@@ -281,6 +281,8 @@ export class SecurityService {
     }
 
     return { valid: true };
+  }
+
   /**
    * Sanitises an AI-bound prompt (Issue #371). Returns a structured result
    * describing whether the prompt was safe, had to be wrapped, or had to be
