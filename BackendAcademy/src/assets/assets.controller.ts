@@ -1,4 +1,5 @@
 import {
+  Body,
   Controller,
   Delete,
   Get,
@@ -11,34 +12,128 @@ import {
   StreamableFile,
   UploadedFile,
   UseInterceptors,
-  Body,
+  UseFilters,
+  Catch,
+  ArgumentsHost,
+  ExceptionFilter,
+  BadRequestException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage, MulterError } from 'multer';
+import type { Response } from 'express';
+import type { NestInterceptor } from '@nestjs/common';
+import type { Options as MulterOptions } from 'multer';
 import {
   ApiBody,
   ApiConsumes,
   ApiOperation,
   ApiParam,
   ApiProduces,
-  ApiQuery,
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
-import { memoryStorage } from 'multer';
 
-import { AssetsService } from './assets.service';
+import { AssetsService, ALLOWED_MIME_TYPES } from './assets.service';
 import { UploadAssetDto } from './dto/upload-asset.dto';
 import type { Asset, AssetListResponse, AssetSortOrder } from './interfaces/asset.interface';
 
+/** Maximum per-file upload size (mirrors `ASSETS_MAX_SIZE_MB`, default 10 MB). */
+const MAX_UPLOAD_BYTES =
+  (() => {
+    const mb = Number(process.env.ASSETS_MAX_SIZE_MB ?? 10);
+    return Number.isFinite(mb) && mb > 0 ? Math.floor(mb * 1024 * 1024) : 10 * 1024 * 1024;
+  })();
+
 /**
- * REST surface for stored (uploaded) assets. Static, prebuilt assets are
- * served separately via `app.useStaticAssets()` mounted in `main.ts` so
- * that read-only directory does not flow through this controller.
+ * Maps multer upload failures onto clean HTTP responses:
+ *  - oversized uploads → 413 (Payload Too Large)
+ *  - wrong field name / unexpected file → 400 (Bad Request)
+ * This keeps the controller body free of transport-specific error handling.
  */
+@Catch(MulterError)
+class MulterExceptionFilter implements ExceptionFilter {
+  catch(exception: MulterError, host: ArgumentsHost) {
+    const ctx = host.switchToHttp();
+    const res = ctx.getResponse<Response>();
+    if (exception.code === 'LIMIT_FILE_SIZE') {
+      res.status(HttpStatus.PAYLOAD_TOO_LARGE).json({
+        statusCode: HttpStatus.PAYLOAD_TOO_LARGE,
+        message: 'Uploaded asset exceeds the maximum allowed size',
+        error: 'Payload Too Large',
+      });
+      return;
+    }
+    res.status(HttpStatus.BAD_REQUEST).json({
+      statusCode: HttpStatus.BAD_REQUEST,
+      message: exception.message,
+      error: 'Bad Request',
+    });
+  }
+}
+
+/**
+ * Builds multer options with strict bounds, reading live limits from the
+ * injected service. Declared as a function so the interceptor can be bound to
+ * a concrete controller instance in the constructor.
+ */
+function buildUploadOptions(assetsService: AssetsService): MulterOptions {
+  return {
+    storage: memoryStorage(),
+    limits: {
+      fileSize: assetsService.getMaxSizeBytes(),
+      files: 1,
+      fieldSize: 1024 * 1024,
+      fields: 10,
+      parts: 12,
+    },
+    fileFilter: (_req, file, cb) => {
+      const declared = (file.mimetype || '').toLowerCase();
+      const isAllowed = ALLOWED_MIME_TYPES.some(({ mime, prefix }) =>
+        prefix ? declared.startsWith(mime) : declared === mime,
+      );
+
+      if (
+        !isAllowed ||
+        /^(?:application\/(?:x-|octet-stream)|text\/html|image\/svg\+xml)/.test(
+          declared,
+        )
+      ) {
+        cb(
+          new BadRequestException(
+            `Asset MIME type '${file.mimetype}' is not allowed`,
+          ),
+          false,
+        );
+        return;
+      }
+
+      const lower = (file.originalname || '').toLowerCase();
+      if (
+        /\.(?:exe|dll|sh|bat|cmd|msi|php|phtml|js|cgi|pl|py|rb|jar|com|scr|vbs|wsf)$/.test(
+          lower,
+        )
+      ) {
+        cb(
+          new BadRequestException('Asset filename uses a disallowed extension'),
+          false,
+        );
+        return;
+      }
+
+      cb(null, true);
+    },
+  };
+}
+
 @ApiTags('assets')
 @Controller('assets')
+@UseFilters(MulterExceptionFilter)
 export class AssetsController {
-  constructor(private readonly assetsService: AssetsService) {}
+  private readonly uploadInterceptor: NestInterceptor;
+
+  constructor(private readonly assetsService: AssetsService) {
+    this.uploadInterceptor = new FileInterceptor('file', buildUploadOptions(assetsService));
+  }
 
   /**
    * `GET /assets` — list all stored assets, optionally sorted.
@@ -91,7 +186,7 @@ export class AssetsController {
     return new StreamableFile(stream, {
       type: asset.mimeType,
       length: asset.size,
-      disposition: `attachment; filename="${asset.originalName.replace(/"/g, '')}"`,
+      disposition: `attachment; filename="${asset.originalName.replace(/["\\]/g, '')}"`,
     });
   }
 
@@ -99,22 +194,15 @@ export class AssetsController {
    * `POST /assets` — upload a new asset via `multipart/form-data`.
    *
    * The accompanying text fields are validated against `UploadAssetDto`
-   * by the global `ValidationPipe`.
+   * by the global `ValidationPipe`. multer is configured with strict limits
+   * and a `fileFilter` so malformed or disallowed uploads are rejected before
+   * the bytes are buffered into memory, and the service performs content-
+   * based inspection (magic bytes, quotas, dangerous-content screening)
+   * before the file is persisted.
    */
   @Post()
   @HttpCode(HttpStatus.CREATED)
-  @UseInterceptors(
-    FileInterceptor('file', {
-      // Buffer the upload in memory; the service persists the buffer to
-      // disk. This keeps the controller-bound storage configuration free
-      // of synchronous filesystem calls and is easier to test.
-      storage: memoryStorage(),
-      limits: {
-        fileSize:
-          Number(process.env.ASSETS_MAX_SIZE_MB ?? 10) * 1024 * 1024,
-      },
-    }),
-  )
+  @UseInterceptors(this.uploadInterceptor)
   @ApiConsumes('multipart/form-data')
   @ApiBody({
     schema: {
@@ -130,12 +218,13 @@ export class AssetsController {
   @ApiOperation({ summary: 'Upload an asset' })
   @ApiResponse({ status: 201, description: 'Asset successfully stored.' })
   @ApiResponse({ status: 400, description: 'Invalid asset payload.' })
+  @ApiResponse({ status: 413, description: 'Asset exceeds maximum size.' })
   async upload(
     @UploadedFile() file: Express.Multer.File,
     @Body() dto: UploadAssetDto,
   ): Promise<Asset> {
     if (!file) {
-      throw new Error('No file provided under field "file"');
+      throw new BadRequestException('No file provided under field "file"');
     }
     return this.assetsService.registerBuffer({
       buffer: file.buffer,

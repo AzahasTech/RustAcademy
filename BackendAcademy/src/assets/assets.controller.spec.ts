@@ -3,6 +3,7 @@ import { AssetsController } from './assets.controller';
 import { AssetsService } from './assets.service';
 import { NotFoundException } from '@nestjs/common';
 import type { Asset, AssetListResponse } from './interfaces/asset.interface';
+import { SecurityService } from '../security/security.service';
 
 describe('AssetsController', () => {
   let controller: AssetsController;
@@ -17,6 +18,7 @@ describe('AssetsController', () => {
     uploadedAt: '2025-01-01T00:00:00.000Z',
     url: '/api/v1/assets/11111111-1111-4111-8111-111111111111/download',
     name: 'Sample',
+    contentHash: 'abc',
   };
 
   beforeEach(async () => {
@@ -31,8 +33,13 @@ describe('AssetsController', () => {
             openReadStream: jest.fn(),
             registerBuffer: jest.fn(),
             remove: jest.fn(),
+            getMaxSizeBytes: jest.fn().mockReturnValue(10 * 1024 * 1024),
+            getAllowedMimeTypes: jest
+              .fn()
+              .mockReturnValue([{ mime: 'image/png', prefix: false }, { mime: 'text/', prefix: true }]),
           },
         },
+        { provide: SecurityService, useValue: {} },
       ],
     }).compile();
 

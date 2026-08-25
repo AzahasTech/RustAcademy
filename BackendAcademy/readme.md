@@ -15,22 +15,36 @@ The server starts on `http://localhost:3000` by default (configurable via `PORT`
 
 The following environment variables are validated at startup. Copy `.env.example` (or set them in your deployment config) and customize as needed.
 
-| Variable | Required | Default | Description |
+| Variable | Required (prod) | Default (dev/test) | Description |
 |---|---|---|---|
 | `NODE_ENV` | No | `development` | Runtime environment (`development`, `production`, `test`) |
 | `PORT` | No | `3000` | Server port |
-| `CORS_ORIGIN` | No | `*` | Allowed CORS origin (e.g. `https://RustAcademy.to`) |
-| `DATABASE_URL` | No | — | Database connection string |
-| `REDIS_HOST` | No | `localhost` | Redis host |
+| `CORS_ORIGIN` | No | `*` | Allowed CORS origin(s): `*` or a comma-separated list |
+| `DATABASE_URL` | **Yes** | `postgresql://…/rustacademy_development` | Database connection string. Mandatory in production — the service refuses to boot without persistence configured |
+| `REDIS_HOST` | **Yes** | `localhost` | Redis host for caching and background jobs. Mandatory in production |
 | `REDIS_PORT` | No | `6379` | Redis port |
-| `JWT_SECRET` | No | — | Secret key for JWT signing |
+| `REDIS_PASSWORD` | No | — | Optional Redis password |
+| `JWT_SECRET` | **Yes** | `development`-only insecure value | Secret key for JWT signing. Required in production and must be ≥ 32 chars; the shipped example/development values are rejected |
+| `ASSET_SIGNING_SECRET` | **Yes** | `development`-only insecure value | HMAC secret for signed asset URLs. Required in production; an empty secret makes signed URLs forgeable |
 | `AI_PROVIDER` | No | `mock` | AI provider (`claude`, `openai`, `mock`) |
-| `ANTHROPIC_API_KEY` | No | — | Anthropic API key (for Claude) |
-| `OPENAI_API_KEY` | No | — | OpenAI API key |
+| `ANTHROPIC_API_KEY` | When `AI_PROVIDER=claude` | — | Anthropic API key |
+| `OPENAI_API_KEY` | When `AI_PROVIDER=openai` | — | OpenAI API key |
 | `AI_MODEL` | No | — | AI model override |
 | `AI_MAX_TOKENS` | No | `4096` | Max tokens for AI requests |
 | `AI_TEMPERATURE` | No | `0.7` | Temperature for AI responses |
 | `LOCALE` | No | `en` | Localization locale (currently `en` supported) |
+| `ASSETS_UPLOAD_DIR` | No | `./data/uploads` | Directory where uploaded assets are persisted |
+| `ASSETS_STATIC_DIR` | No | `./public` | Read-only static asset directory served at `/static` |
+| `ASSETS_BASE_URL` | No | `/api/v1/assets` | Base URL advertised inside asset metadata |
+| `ASSETS_MAX_SIZE_MB` | No | `10` | Maximum size of a single uploaded asset (MB) |
+| `ASSETS_MAX_TOTAL_MB` | No | `1024` | Aggregate byte quota across all stored assets (MB) |
+| `ASSETS_MAX_COUNT` | No | `10000` | Maximum number of assets retained by the registry |
+
+> **Production note:** when `NODE_ENV=production`, startup validation rejects missing
+> `DATABASE_URL`, `REDIS_HOST`, `JWT_SECRET` and `ASSET_SIGNING_SECRET`, low-entropy
+> secrets, and placeholder values copied from `.env.example`. Development and test
+> environments keep explicit (non-production) defaults so local boots stay simple.
+> Validation errors never include secret values.
 
 ## Cron Scheduling
 
