@@ -1,4 +1,5 @@
 export enum ErrorCode {
+  SUCCESS = 'SUCCESS',
   VALIDATION_ERROR = 'VALIDATION_ERROR',
   NOT_FOUND = 'NOT_FOUND',
   UNAUTHORIZED = 'UNAUTHORIZED',
@@ -47,6 +48,7 @@ export enum ErrorCode {
 }
 
 export const ERROR_CODE_MESSAGES: Record<ErrorCode, string> = {
+  [ErrorCode.SUCCESS]: 'Success',
   [ErrorCode.VALIDATION_ERROR]: 'The request body failed validation',
   [ErrorCode.NOT_FOUND]: 'The requested resource was not found',
   [ErrorCode.UNAUTHORIZED]: 'Authentication is required',
