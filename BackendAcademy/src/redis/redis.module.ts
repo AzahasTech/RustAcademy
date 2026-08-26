@@ -16,7 +16,23 @@ import { RedisService } from './redis.service';
       inject: [ConfigService],
     },
     RedisService,
+    {
+      provide: 'SessionStore',
+      inject: [RedisService],
+      useFactory: (redis: RedisService) => ({
+        get: async (sessionId: string) => {
+          const raw = await redis.get(`session:${sessionId}`);
+          return raw ? JSON.parse(raw) : null;
+        },
+        set: async (sessionId: string, data: any, ttlSeconds: number) => {
+          await redis.set(`session:${sessionId}`, JSON.stringify(data), 'EX', ttlSeconds);
+        },
+        delete: async (sessionId: string) => {
+          await redis.del(`session:${sessionId}`);
+        },
+      }),
+    },
   ],
-  exports: ['REDIS_OPTIONS', RedisService],
+  exports: ['REDIS_OPTIONS', RedisService, 'SessionStore'],
 })
 export class RedisModule {}
