@@ -1,9 +1,7 @@
 import { Module, MiddlewareConsumer, NestModule } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
-import { ConfigService } from '@nestjs/config';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerGuard, ThrottleModule } from '@nestjs/throttler';
 import { AppController } from './app.controller';
-import { ApiInfoController } from './api-info.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
 import { ChallengesModule } from './challenges/challenges.module';
@@ -13,10 +11,6 @@ import { SubmissionModule } from './submissions/submission.module';
 import { TutorProfileModule } from './users/tutor-profile.module';
 import { ContractsModule } from './contracts/contracts.module';
 import { UserProfileModule } from './users/user-profile.module';
-import { TutorProfileModule } from './users/tutor-profile.module';
-import { SubmissionModule } from './submissions/submission.module';
-import { RewardsModule } from './rewards/rewards.module';
-import { SecurityModule } from './security/security.module';
 import { AppConfigModule } from './config/config.module';
 import { AssetsModule } from './assets/assets.module';
 import { PathfindingModule } from './pathfinding/pathfinding.module';
@@ -27,27 +21,26 @@ import { I18nModule } from './i18n/i18n.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { HealthModule } from './health/health.module';
 import { CorrelationIdMiddleware } from './common/correlation-id.middleware';
+import { AiModule } from './ai/ai.module';
+import { LeaderboardModule } from './leaderboard/leaderboard.module';
+import { AnalyticsModule } from './analytics/analytics.module';
+import { WalletModule } from './wallet/wallet.module';
+import { SocialModule } from './social/social.module';
+import { OnboardingModule } from './onboarding/onboarding.module';
+import { LessonModule } from './lesson/lesson.module';
+import { TaskModule } from './task/task.module';
+import { CourseModule } from './course/course.module';
+import { LoggingModule } from './logging/logging.module';
+import { ProgressModule } from './progress/progress.module';
+import { RedisModule } from './redis/redis.module';
 
-/**
- * Root application module.
- *
- * #395: Contract ingestion is gated behind the CONTRACT_INGESTION_ENABLED
- * feature flag. The ContractsModule itself handles the gate internally —
- * when ingestion is disabled, contract invocation & deployment will return
- * a clear error rather than silently failing. This ensures no accidental
- * contract processing occurs when env vars are misconfigured.
- *
- * Duplicate module imports from the original have been consolidated.
- */
 @Module({
   imports: [
     AppConfigModule,
-    ThrottlerModule.forRoot([
-      {
-        ttl: 60000,
-        limit: 10,
-      },
-    ]),
+    ThrottlerModule.forRoot([{ ttl: 60000, limit: 10 }]),
+    AuthModule,
+    ContractsModule,
+    RedisModule,
     UserProfileModule,
     TutorProfileModule,
     SubmissionModule,
@@ -72,16 +65,12 @@ import { CorrelationIdMiddleware } from './common/correlation-id.middleware';
     PaymentsModule,
     I18nModule,
     NotificationsModule,
-    // #375, #376: Health + readiness probe module
     HealthModule,
   ],
   controllers: [AppController],
   providers: [
     AppService,
-    {
-      provide: APP_GUARD,
-      useClass: ThrottlerGuard,
-    },
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
   ],
 })
 export class AppModule implements NestModule {
