@@ -15,8 +15,8 @@ export interface Session {
   /** Role associated with the session. */
   role: UserRole;
 
-  /** Opaque refresh token value that can be exchanged for a new access token. */
-  refreshToken: string;
+  /** SHA-256 hash of the refresh token (never store raw token). */
+  refreshTokenHash: string;
 
   /** When this session was first created. */
   createdAt: Date;
