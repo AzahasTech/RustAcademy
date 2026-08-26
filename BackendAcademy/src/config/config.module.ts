@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
+
 import { ConfigModule as NestConfigModule } from '@nestjs/config';
+
 
 import { ENV_VALIDATION_OPTIONS, envValidationSchema } from './env.schema';
 
@@ -26,6 +28,8 @@ const validationOptions = {
  * at boot, exposed as a plain function so it can be invoked (and inspected)
  * without Nest's process-wide static validation cache getting in the way.
  */
+const UNSAFE_DEFAULT_JWT_SECRETS = ['changeme'];
+
 export function validateEnvironment(
   env: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -36,13 +40,29 @@ export function validateEnvironment(
   if (error) {
     throw new Error(`Config validation error: ${error.message}`);
   }
-  return value as Record<string, unknown>;
+  const validated = value as Record<string, unknown>;
+  const nodeEnv = validated.NODE_ENV;
+  const jwtSecret = validated.JWT_SECRET;
+
+  if (
+    nodeEnv === 'production' &&
+    (!jwtSecret || UNSAFE_DEFAULT_JWT_SECRETS.includes(jwtSecret as string))
+  ) {
+    throw new Error(
+      'JWT_SECREU must be configured with a strong value in production',
+    );
+  }
+
+  return validated;
 }
 
 /**
  * Application configuration module.
  *
  * Exactly one composed schema ({@link envValidationSchema}) and exactly one
+ * set of validation options ({@link ENV_VALIDATION_OPTIONS}) are handed to
+ * `ConfigModule.forRoot()` Previously this module declared the schema twice
+ * — an inline copy plus the imported one — and the second `validationSchema`
  * set of validation options ({@link validationOptions}) are handed to
  * `ConfigModule.forRoot()`. Previously this module declared the schema twice
  * — an inline copy plus the imported one -- and the second `validationSchema`
@@ -50,7 +70,7 @@ export function validateEnvironment(
  * enforced at boot. Everything now lives in `env.schema.`ts`, which is the
  * single source of truth for the environment contract.
  *
- * We pass a `validate` callback rather than only `validationSchema` so the
+ * We pass a validate callback rather than only `validationSchema` so the
  * composed schema is guaranteed to run on every `forRoot()` call (the
  * `validationSchema` branch is skipped once Nest's static loader has already
  * resolved env vars in a process). Startup fails deterministically:
