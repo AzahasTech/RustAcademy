@@ -6,9 +6,55 @@ import { PromptTemplateService } from './prompt-template.service';
 import { ClaudeProvider } from './providers/claude.provider';
 import { OpenaiProvider } from './providers/openai.provider';
 
+function validateAiConfig(configService: ConfigService): void {
+  const provider = configService.get<string>('AI_PROVIDER');
+  if (provider && !['openai', 'claude'].includes(provider)) {
+    throw new Error(`Invalid AI_PROVIDER: ${provider}. Must be 'openai' or 'claude'.`);
+  }
+
+  const numericParams: Array<{ key: string; min: number; max: number; integer?: boolean }> = [
+    { key: 'AI_TEMPERATURE', min: 0, max: 2 },
+    { key: 'AI_TOP_P', min: 0, max: 1 },
+    { key: 'AI_MAX_TOKENS', min: 1, max: 200000, integer: true },
+    { key: 'AI_FREQUENCY_PENALTY', min: -2, max: 2 },
+    { key: 'AI_PRESENCE_PENALTY', min: -2, max: 2 },
+  ];
+
+  for (const param of numericParams) {
+    const raw = configService.get<string>(param.key);
+    if (raw === undefined || raw === null || raw === '') continue;
+    const num = Number(raw);
+    if (Number.isNaN(num)) {
+      throw new Error(`AI config ${param.key} must be a number, got "${raw}".`);
+    }
+    if (param.integer && !Number.isInteger(num)) {
+      throw new Error(`AI config ${param.key} must be an integer, got "${raw}".`);
+    }
+    if (num < param.min || num > param.max) {
+      throw new Error(`AI config ${param.key} must be tween ${param.min} and ${param.max}, got "${raw}".`);
+    }
+    process.env[param.key] = String(num);
+  }
+
+  const boolParams = ['AI_ENABLE_STREAMING', 'AI_ENABLE_LOGGING'];
+  for (const key of boolParams) {
+    const raw = configService.get<string>(key);
+    if (raw === undefined || raw === null || raw === '') continue;
+    const lower = raw.toLowerCase();
+    if (['true', '1', 'yes', 'y', 'on'].includes(lower)) {
+      process.env[key] = 'true';
+    } else if (['false', '0', 'no' , 'n', 'off'].includes(lower)) {
+      process.env[key] = 'false';
+    } else {
+      throw new Error(`AI config ${key} must be a boolean, got "${raw}".`);
+    }
+  }
+}
+
 const aiProviderFactory = {
   provide: AI_PROVIDER,
   useFactory: (configService: ConfigService) => {
+    validateAiConfig(configService);
     const provider = configService.get<string>('AI_PROVIDER');
     if (provider === 'openai') return new OpenaiProvider(configService);
     if (provider === 'claude') return new ClaudeProvider(configService);
