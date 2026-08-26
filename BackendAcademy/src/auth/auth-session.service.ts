@@ -91,6 +91,14 @@ export class AuthSessionService {
     };
   }
 
+  private hashToken(token: string): string {
+    return createHash('sha256').update(token).digest('hex');
+  }
+
+    private hashToken(token: string): string {
+      return createHash('sha256').update(token).digest('hex');
+     }
+
   // ---------------------------------------------------------------------------
   // #350: Public policy access
   // ---------------------------------------------------------------------------
@@ -152,8 +160,7 @@ export class AuthSessionService {
     const session: Session = {
       sessionId,
       userId,
-      role,
-      refreshToken,
+      role,  refreshTokenHash: this.hashToken(refreshToken),
       createdAt: now,
       expiresAt,
       revoked: false,
@@ -201,7 +208,7 @@ export class AuthSessionService {
       });
     }
 
-    if (session.refreshToken !== rawRefreshToken) {
+    if (this.hashToken(rawRefreshToken) !== session.refreshTokenHash) {
       // Token reuse detected — revoke the whole session as a security measure.
       session.revoked = true;
       this.sessions.set(session.sessionId, session);
