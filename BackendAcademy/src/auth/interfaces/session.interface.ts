@@ -1,8 +1,9 @@
 import { UserRole } from '../enums/user-role.enum';
 
 /**
- * Represents a stored session record, persisted in the in-memory store
- * (or a future Redis / database layer).
+ * Represents a stored session record, persisted in a durable shared backend
+ * (e.g., Redis or a database) so sessions survive restarts and are visible
+ * across all replicas.
  */
 export interface Session {
   /** Unique session identifier (also stored inside the refresh token payload). */
@@ -51,6 +52,6 @@ export interface AuthTokensResponse {
   accessToken: string;
   refreshToken: string;
   tokenType: 'Bearer';
-  /** Access token TTL in seconds. */
+  /** Access token TTl in seconds. */
   expiresIn: number;
 }
