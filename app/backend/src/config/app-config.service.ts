@@ -2,6 +2,7 @@ import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 
 import { EnvConfig } from "./env.schema";
+import { randomBytes } from "crypto";
 
 /**
  * Typed configuration service with centralized accessors for environment variables.
@@ -37,6 +38,43 @@ export class AppConfigService {
    */
   get supabaseAnonKey(): string {
     return this.configService.get("SUPABASE_ANON_KEY", { infer: true });
+  }
+
+  /**
+   * HMAC secret for wallet access tokens (#549).
+   *
+   * Falls back to a per-process random secret when unset. That keeps local
+   * development working, but it means access tokens do not survive a restart
+   * and are not valid across instances — set the variable in any deployment
+   * running more than one process.
+   */
+  get walletAuthAccessTokenSecret(): string {
+    return (
+      this.configService.get("WALLET_AUTH_ACCESS_TOKEN_SECRET", {
+        infer: true,
+      }) ?? randomBytes(32).toString("hex")
+    );
+  }
+
+  /** Wallet access-token lifetime in seconds. */
+  get walletAuthAccessTtlSeconds(): number {
+    return this.configService.get("WALLET_AUTH_ACCESS_TTL_SECONDS", {
+      infer: true,
+    });
+  }
+
+  /** Wallet login challenge lifetime in seconds. */
+  get walletAuthNonceTtlSeconds(): number {
+    return this.configService.get("WALLET_AUTH_NONCE_TTL_SECONDS", {
+      infer: true,
+    });
+  }
+
+  /** Absolute wallet session lifetime in seconds. */
+  get walletAuthRefreshTtlSeconds(): number {
+    return this.configService.get("WALLET_AUTH_REFRESH_TTL_SECONDS", {
+      infer: true,
+    });
   }
 
   /**
@@ -337,4 +375,76 @@ export class AppConfigService {
   get appBaseUrl(): string | undefined {
     return this.configService.get("APP_BASE_URL", { infer: true });
   }
+
+  /**
+   * Validates the loaded, typed configuration (dependency state).
+   *
+   * The Joi schema in `env.schema.ts` validates raw environment variables at
+   * boot; this method validates the *loaded* configuration the rest of the
+   * application depends on, plus cross-field rules that the schema cannot
+   * express (e.g. production CORS posture, signing key consistency). It is
+   * invoked from `main.ts` before the HTTP server binds.
+   *
+   * @returns `errors` must be empty for startup to proceed; `warnings` are
+   *   logged but do not block startup.
+   */
+  validate(): StartupValidationResult {
+    const errors: string[] = [];
+    const warnings: string[] = [];
+
+    // Required dependencies. Defensive: the Joi schema already enforces these,
+    // but a partially loaded ConfigService must never slip through silently.
+    if (!this.supabaseUrl) {
+      errors.push(
+        "SUPABASE_URL is missing — set it (e.g. https://<project>.supabase.co) before starting",
+      );
+    }
+    if (!this.supabaseAnonKey) {
+      errors.push(
+        "SUPABASE_ANON_KEY is missing — set it before starting",
+      );
+    }
+    if (!this.network) {
+      errors.push(
+        'NETWORK is missing — set it to "testnet" or "mainnet" before starting',
+      );
+    }
+
+    // Ingestion safety gate (mirrors the env schema check on loaded values).
+    if (this.ingestionEnabled && !this.RustAcademyContractId) {
+      errors.push(
+        "INGESTION_ENABLED is true but RustAcademy_CONTRACT_ID is not set — set the contract ID or disable ingestion",
+      );
+    }
+
+    // Payment signing consistency.
+    if (this.isPaymentSigningConfigured && !this.stellarPublicKey) {
+      warnings.push(
+        "STELLAR_SECRET_KEY is set but STELLAR_PUBLIC_KEY is not — signing works, but features that need the public key (e.g. wallet verification) may fail",
+      );
+    }
+
+    // Production CORS posture: no explicit origins and no Vercel project means
+    // every cross-origin browser request will be blocked.
+    if (
+      this.isProduction &&
+      this.corsAllowedOrigins.length === 0 &&
+      !this.corsVercelProject
+    ) {
+      warnings.push(
+        "NODE_ENV=production but CORS_ALLOWED_ORIGINS and CORS_VERCEL_PROJECT are both unset — all cross-origin browser requests will be blocked",
+      );
+    }
+
+    return { errors, warnings };
+  }
+}
+
+/**
+ * Result of {@link AppConfigService.validate}.
+ * `errors` must be empty for startup to proceed; `warnings` are advisory.
+ */
+export interface StartupValidationResult {
+  errors: string[];
+  warnings: string[];
 }

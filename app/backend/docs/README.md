@@ -309,6 +309,9 @@ curl http://localhost:4000/reconciliation/backfill/status
 - CORS configuration
 - Input validation and sanitization
 - Environment variable validation
+- Stricter per-user + per-IP rate limiting and audit trails on admin, auth,
+  and payment-sensitive mutations — see
+  [RATE-LIMITING-AND-AUDIT.md](./RATE-LIMITING-AND-AUDIT.md)
 
 ### Best Practices
 

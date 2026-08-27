@@ -161,4 +161,30 @@ mod tests {
             assert!(prefix.len() >= 32);
         });
     }
+
+    #[test]
+    fn zero_nonce_fails_validation() {
+        let ctx = TestContext::new();
+        ctx.env.ledger().set_timestamp(1_000_000);
+        let signer = soroban_sdk::Address::generate(&ctx.env);
+        let contract_id = ctx.client.address.clone();
+
+        ctx.env.as_contract(&contract_id, || {
+            let result = verify_and_consume(&ctx.env, &signer, 0, 2_000_000);
+            assert_eq!(result, Err( RustAcademyError::NonceAlreadyUsed));
+        });
+    }
+
+    #[test]
+    fn zero_valid_until_fails_validation() {
+        let ctx = TestContext::new();
+        ctx.env.ledger().set_timestamp(1_000_000);
+        let signer = soroban_sdk::Address::generate(&ctx.env);
+        let contract_id = ctx.client.address.clone();
+
+        ctx.env.as_contract(&contract_id, || {
+            let result = verify_and_consume(&ctx.env, &signer, 1, 0);
+            assert_eq!(result, Err( RustAcademyError::SignatureExpired));
+        });
+    }
 }

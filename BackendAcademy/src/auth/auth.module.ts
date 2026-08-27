@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { RedisModule } from '../redis/redis.module';
 import { JwtLearnerGuard } from './guards/jwt-learner.guard';
 import { JwtTutorGuard } from './guards/jwt-tutor.guard';
 import { JwtAdminGuard } from './guards/jwt-admin.guard';
@@ -11,6 +12,7 @@ import { AuthSessionController } from './auth-session.controller';
 @Module({
   imports: [
     ConfigModule,
+    RedisModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       useFactory: (config: ConfigService) => ({

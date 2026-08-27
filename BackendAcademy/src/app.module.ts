@@ -1,6 +1,6 @@
-import { Module } from '@nestjs/common';
+import { Module, MiddlewareConsumer, NestModule } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerGuard, ThrottleModule } from '@nestjs/throttler';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
@@ -11,38 +11,36 @@ import { SubmissionModule } from './submissions/submission.module';
 import { TutorProfileModule } from './users/tutor-profile.module';
 import { ContractsModule } from './contracts/contracts.module';
 import { UserProfileModule } from './users/user-profile.module';
-import { AiModule } from './ai/ai.module';
-import { LeaderboardModule } from './leaderboard/leaderboard.module';
-import { AnalyticsModule } from './analytics/analytics.module';
-import { WalletModule } from './wallet/wallet.module';
-import { SocialModule } from './social/social.module';
-import { OnboardingModule } from './onboarding/onboarding.module';
-import { LessonModule } from './lessons/lesson.module';
-import { TaskModule } from './tasks/task.module';
-import { CourseModule } from './courses';
-import { JobsModule } from './jobs/jobs.module';
-import { LoggingModule } from './logging/logging.module';
-import { ProgressModule } from './courses/progress/progress.module';
 import { AppConfigModule } from './config/config.module';
 import { AssetsModule } from './assets/assets.module';
 import { PathfindingModule } from './pathfinding/pathfinding.module';
 import { MonitoringModule } from './monitoring/monitoring.module';
 import { SearchModule } from './search/search.module';
 import { PaymentsModule } from './payments/payments.module';
-import { SessionsModule } from './sessions/sessions.module';
-import { ReportsModule } from './reports/reports.module';
+import { I18nModule } from './i18n/i18n.module';
+import { NotificationsModule } from './notifications/notifications.module';
+import { HealthModule } from './health/health.module';
+import { CorrelationIdMiddleware } from './common/correlation-id.middleware';
+import { AiModule } from './ai/ai.module';
+import { LeaderboardModule } from './leaderboard/leaderboard.module';
+import { AnalyticsModule } from './analytics/analytics.module';
+import { WalletModule } from './wallet/wallet.module';
+import { SocialModule } from './social/social.module';
+import { OnboardingModule } from './onboarding/onboarding.module';
+import { LessonModule } from './lesson/lesson.module';
+import { TaskModule } from './task/task.module';
+import { CourseModule } from './course/course.module';
+import { LoggingModule } from './logging/logging.module';
+import { ProgressModule } from './progress/progress.module';
+import { RedisModule } from './redis/redis.module';
 
 @Module({
   imports: [
-    ThrottlerModule.forRoot([
-      {
-        limit: 10,
-        ttl: 60_000,
-      },
-    ]),
     AppConfigModule,
+    ThrottlerModule.forRoot([{ ttl: 60000, limit: 10 }]),
     AuthModule,
     ContractsModule,
+    RedisModule,
     UserProfileModule,
     TutorProfileModule,
     SubmissionModule,
@@ -50,7 +48,6 @@ import { ReportsModule } from './reports/reports.module';
     SecurityModule,
     ChallengesModule,
     AiModule,
-    ContractsModule,
     LeaderboardModule,
     AnalyticsModule,
     WalletModule,
@@ -60,23 +57,24 @@ import { ReportsModule } from './reports/reports.module';
     TaskModule,
     CourseModule,
     AssetsModule,
-    JobsModule,
     LoggingModule,
     PathfindingModule,
     MonitoringModule,
     ProgressModule,
     SearchModule,
     PaymentsModule,
-    SessionsModule,
-    ReportsModule,
+    I18nModule,
+    NotificationsModule,
+    HealthModule,
   ],
   controllers: [AppController],
   providers: [
     AppService,
-    {
-      provide: APP_GUARD,
-      useClass: ThrottlerGuard,
-    },
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(CorrelationIdMiddleware).forRoutes('*');
+  }
+}

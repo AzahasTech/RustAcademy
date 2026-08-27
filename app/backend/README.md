@@ -114,6 +114,43 @@ try {
 
 ---
 
+## Request Correlation & Distributed Tracing
+
+Every inbound HTTP request receives a unique **correlation ID** (`x-request-id`). This ID is automatically propagated across all layers:
+
+| Layer | How it works |
+|---|---|
+| **HTTP middleware** | `CorrelationIdMiddleware` extracts or generates a UUID and sets it on the request, response headers, and `AsyncLocalStorage` context. |
+| **Logging** | `LoggingInterceptor` and `MetricsInterceptor` emit structured JSON logs containing `correlationId`. |
+| **Metrics** | Prometheus histograms/counters include the correlation ID in log output for Grafana correlation. |
+| **Job queue** | `JobQueueService.enqueue()` captures the caller's correlation ID and persists it in the `jobs` table. `JobExecutor` restores it into `AsyncLocalStorage` when the job runs. |
+| **Error responses** | `GlobalHttpExceptionFilter` includes `request_id` / `correlationId` in every error envelope. |
+| **External calls** | `@TraceExternalCall` decorator reads the correlation ID from `AsyncLocalStorage` for downstream call tracing. |
+
+### Tracing a request end-to-end
+
+1. **Client sends HTTP request** with `x-request-id: <uuid>` (optional — generated if absent).
+2. **Middleware** stores the ID in `AsyncLocalStorage` and sets response headers.
+3. **Interceptors** log structured JSON with the correlation ID on every request.
+4. **If a background job is enqueued**, the correlation ID is stored in the `jobs.correlation_id` column.
+5. **When the job executor picks up the job**, it restores the original correlation ID into `AsyncLocalStorage`, so all downstream service calls (DB, external APIs) carry the same ID.
+6. **To trace a full request lifecycle**, grep logs for the correlation ID:
+   ```bash
+   # Find all log entries for a specific request
+   grep 'correlationId.*abc-123-...' logs/combined.log
+   ```
+
+### Correlation ID headers
+
+| Header | Direction | Purpose |
+|---|---|---|
+| `x-request-id` | Request → Response | Canonical correlation identifier |
+| `x-correlation-id` | Request → Response | Legacy alias (backward compatible) |
+
+Both headers are set on every response so clients can correlate responses to requests.
+
+---
+
 ## Architecture
 
 ```text
@@ -135,6 +172,16 @@ Claude
 ## Environment Variables
 
 All environment variables are validated at startup by `src/config/env.schema.ts` (Joi). If a required variable is missing or invalid, the process throws and refuses to start — the thrown message names the offending key.
+
+### Fail-fast startup validation
+
+Startup runs the following checks in order and aborts **before the HTTP server binds** if any of them fail:
+
+1. **Environment schema validation** — `validateEnv()` (`src/config/env.schema.ts`) validates `process.env` against the Joi schema and throws a single error listing *every* missing or invalid variable, with instructions to fix them. It runs both when `AppModule` is evaluated (`src/app.module.ts`) and again at the top of `bootstrap()` (`src/main.ts`), before the Nest application is created.
+2. **Network resolution** — `resolveNetworkSnapshot()` (`src/config/network.config.ts`) resolves the active Stellar network and its endpoints. It rejects conflicting `NETWORK`/`STELLAR_NETWORK` values and malformed `HORIZON_URL`, `SOROBAN_RPC_URL`, `SOROBAN_RPC_URLS`, or `STELLAR_EXPLORER_URL` overrides, naming the offending variable and the fix.
+3. **Dependency validation** — `AppConfigService.validate()` (`src/config/app-config.service.ts`) checks the *loaded, typed* configuration for cross-field problems (e.g. `INGESTION_ENABLED` without `RustAcademy_CONTRACT_ID`) before the HTTP server binds.
+
+All failures are logged with secrets redacted (`sanitizeErrorMessage`) and include the offending variable name plus what to do about it. Warnings — e.g. `STELLAR_SECRET_KEY` set without `STELLAR_PUBLIC_KEY`, or production with no CORS origins — are logged but do not block startup.
 
 > **Heads up:** this section previously listed `DATABASE_URL`, `REDIS_URL`, `JWT_SECRET`, `ANTHROPIC_API_KEY`, `STELLAR_HORIZON_URL`, `STELLAR_RPC_URL`, and `REWARD_POOL_SECRET_KEY`. None of these are read anywhere in `src/` — they aren't in `env.schema.ts` and setting them has no effect. The table below only lists variables the schema actually validates.
 
@@ -224,7 +271,30 @@ Each group has independent burst and sustained limits, configurable via environm
 
 The identity used to track a client's usage against these limits is resolved in the order set by `RATE_LIMIT_KEY_ORDER` (default `user_id,api_key,ip`) — the first available identity type in that order is used.
 
-Note: the `API_KEYS` environment variable does not affect rate limits. It is unrelated to this system — see the note in `env.schema.ts` for details, which will be corrected as part of this issue.
+Note: the `API_KEYS` environment variable does not affect rate limits. It is unrelated to this system — see the note in `env.schema.ts` for details.
+
+## Health & Dependency-Aware Readiness Endpoints
+
+The API exposes three health reporting endpoints:
+
+| Endpoint | Method | Purpose | Response |
+|---|---|---|---|
+| `/health` | `GET` | Shallow liveness check for Kubernetes/container probes. | `200 OK` `{ status: "ok", version, uptime }` |
+| `/ready` | `GET` | Dependency-aware readiness check evaluating database (Supabase), environment variables, schema migrations, job queue, Horizon, Soroban RPC, and ingestion stream lag in a single contract. | `200 OK` (when all critical dependencies are UP) or `503 Service Unavailable` (when any critical dependency is DOWN) |
+| `/status` | `GET` | Public status endpoint with ETag and Cache-Control headers (no sensitive credentials exposed). | `200 OK` `{ status: "operational", network, components: [...] }` |
+
+### Readiness Contract (`/ready`) Check Breakdown
+
+Operators can inspect readiness without cross-checking multiple endpoints:
+- `supabase`: Database ping & connection pool health (`status`, `latency`, `lastSuccess`, `error`).
+- `environment`: Critical environment configuration validation.
+- `migrations`: Access to database schema migrations tracking table.
+- `queue`: Custom job queue repository query & execution health.
+- `horizon`: Stellar Horizon node connectivity.
+- `soroban_rpc`: Soroban RPC node network passphrase & ledger query.
+- `ingestion`: Stream cursor ingestion lag in seconds.
+
+---
 
 ## Run Locally
 

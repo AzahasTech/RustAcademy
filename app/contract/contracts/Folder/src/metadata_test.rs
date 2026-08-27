@@ -233,6 +233,7 @@ fn metadata_contract_health_reports_emergency_mode() {
     let (env, client) = setup();
     let admin = Address::generate(&env);
     client.initialize(&admin);
+    client.grant_role(&admin, &admin, &crate::types::Role::Governance);
 
     client.activate_emergency_mode(&admin);
 
@@ -247,6 +248,7 @@ fn metadata_contract_health_reports_upgrading() {
     let (env, client) = setup();
     let admin = Address::generate(&env);
     client.initialize(&admin);
+    client.grant_role(&admin, &admin, &crate::types::Role::Governance);
 
     let new_hash = BytesN::from_array(&env, &[0x01u8; 32]);
     env.ledger().set_timestamp(100);
@@ -297,6 +299,7 @@ fn metadata_upgrade_state_after_start_upgrade() {
     let (env, client) = setup();
     let admin = Address::generate(&env);
     client.initialize(&admin);
+    client.grant_role(&admin, &admin, &crate::types::Role::Governance);
 
     let new_hash = BytesN::from_array(&env, &[0x02u8; 32]);
     env.ledger().set_timestamp(100);

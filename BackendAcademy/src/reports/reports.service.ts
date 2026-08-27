@@ -3,6 +3,8 @@ import { AnalyticsEvent } from '../analytics/analytics.entity';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { RewardsService } from '../rewards/rewards.service';
 import { DatabaseService } from '../database/database.service';
+import { ReplayResult, StateReconciliationResult } from '../contracts/interfaces/contracts.interface';
+import { CertificateService, CertificateIssuanceSummary } from '../courses/certificate.service';
 
 export interface DailyActivitySummary {
   date: string;
@@ -62,6 +64,35 @@ export interface CouponRedemptionReport {
   }>;
 }
 
+/**
+ * #394: Report summarizing event replay activity.
+ */
+export interface ReplayActivityReport {
+  totalReplays: number;
+  totalEventsProcessed: number;
+  successfulReplays: number;
+  failedReplays: number;
+  partialReplays: number;
+  replaysByContract: Record<string, number>;
+  recentReplays: ReplayResult[];
+}
+
+/**
+ * #394: Report summarizing state reconciliation activity.
+ */
+export interface ReconciliationReport {
+  totalReconciliations: number;
+  consistentStateCount: number;
+  inconsistentStateCount: number;
+  totalDiscrepancies: number;
+  discrepanciesBySeverity: {
+    critical: number;
+    warning: number;
+    info: number;
+  };
+  recentReconciliations: StateReconciliationResult[];
+}
+
 interface DailyBucket {
   totalEvents: number;
   firstActivityAt: string | null;
@@ -74,8 +105,15 @@ export class ReportsService {
   constructor(
     private readonly analyticsService: AnalyticsService,
     private readonly rewardsService: RewardsService,
+    private readonly submissionsService: SubmissionsService,
     private readonly databaseService?: DatabaseService,
+    private readonly walletService?: WalletService,
+    private readonly certificateService?: CertificateService,
   ) {}
+
+  async getModerationReport(): Promise<{ totalFlagged: number; actionTaken: number; pendingReview: number }> {
+    return { totalFlagged: 0, actionTaken: 0, pendingReview: 0 };
+  }
 
   async getDailySummaryReport(
     userId: string,
@@ -103,6 +141,11 @@ export class ReportsService {
       summaries,
       progress: this.buildProgress(userId, filteredEvents, fullSummaries),
     };
+  }
+
+  async getWalletReconciliationReport(): Promise<import('../wallet/wallet.service').ReconciliationReport | null> {
+    if (!this.walletService) return null;
+    return this.walletService.reconcileAllWallets();
   }
 
   async getCouponRedemptionReport(): Promise<CouponRedemptionReport> {
@@ -144,6 +187,127 @@ export class ReportsService {
       redemptionsByCoupon,
     };
   }
+
+  // ──────────────────────────────────────────────────────────────────
+  // #394: Event replay and reconciliation reports
+  // ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Generates a report on event replay activity.
+   */
+  getReplayActivityReport(replayHistory: ReplayResult[]): ReplayActivityReport {
+    const replaysByContract: Record<string, number> = {};
+    let totalProcessed = 0;
+    let successful = 0;
+    let failed = 0;
+    let partial = 0;
+
+    for (const replay of replayHistory) {
+      replaysByContract[replay.contractId] =
+        (replaysByContract[replay.contractId] ?? 0) + 1;
+      totalProcessed += replay.eventsProcessed;
+
+      switch (replay.status) {
+        case 'completed':
+          successful++;
+          break;
+        case 'failed':
+          failed++;
+          break;
+        case 'partial':
+          partial++;
+          break;
+      }
+    }
+
+    // Most recent replays, sorted by completion time
+    const recentReplays = [...replayHistory]
+      .sort((a, b) => b.completedAt.getTime() - a.completedAt.getTime())
+      .slice(0, 20);
+
+    return {
+      totalReplays: replayHistory.length,
+      totalEventsProcessed: totalProcessed,
+      successfulReplays: successful,
+      failedReplays: failed,
+      partialReplays: partial,
+      replaysByContract,
+      recentReplays,
+    };
+  }
+
+  /**
+   * Generates a report on state reconciliation activity.
+   */
+  getReconciliationReport(
+    reconciliationHistory: StateReconciliationResult[],
+  ): ReconciliationReport {
+    let consistent = 0;
+    let inconsistent = 0;
+    let totalDiscrepancies = 0;
+    const bySeverity = { critical: 0, warning: 0, info: 0 };
+
+    for (const result of reconciliationHistory) {
+      if (result.isConsistent) {
+        consistent++;
+      } else {
+        inconsistent++;
+      }
+
+      for (const d of result.discrepancies) {
+        totalDiscrepancies++;
+        switch (d.severity) {
+          case 'critical':
+            bySeverity.critical++;
+            break;
+          case 'warning':
+            bySeverity.warning++;
+            break;
+          case 'info':
+            bySeverity.info++;
+            break;
+        }
+      }
+    }
+
+    const recentReconciliations = [...reconciliationHistory]
+      .sort((a, b) => b.reconciledAt.getTime() - a.reconciledAt.getTime())
+      .slice(0, 20);
+
+    return {
+      totalReconciliations: reconciliationHistory.length,
+      consistentStateCount: consistent,
+      inconsistentStateCount: inconsistent,
+      totalDiscrepancies,
+      discrepanciesBySeverity: bySeverity,
+      recentReconciliations,
+    };
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // #357: Certificate issuance reports
+  // ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Generates a report summarizing certificate issuance activity.
+   * Returns a zeroed report when no certificate service is available.
+   */
+  getCertificateIssuanceReport(): CertificateIssuanceSummary {
+    if (!this.certificateService) {
+      return {
+        totalIssued: 0,
+        totalActive: 0,
+        totalRevoked: 0,
+        issuedByCourse: [],
+        recentIssuances: [],
+      };
+    }
+    return this.certificateService.getIssuanceSummary();
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // Private helpers
+  // ──────────────────────────────────────────────────────────────────
 
   private buildDailySummaries(
     events: AnalyticsEvent[],

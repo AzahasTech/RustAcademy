@@ -1,6 +1,7 @@
 import { CourseEntity } from '../courses/course.entity';
 import { CourseLevel } from '../courses';
 import { CourseService } from '../courses/course.service';
+import { RewardsService } from '../rewards/rewards.service';
 import { SearchService } from './search.service';
 
 describe('SearchService', () => {
@@ -8,7 +9,13 @@ describe('SearchService', () => {
   let searchService: SearchService;
 
   beforeEach(() => {
-    courseService = new CourseService();
+    courseService = new CourseService(
+      null as any,
+      null as any,
+      { recordActivity: jest.fn() } as unknown as RewardsService,
+      undefined as any,
+      undefined as any,
+    );
     searchService = new SearchService(courseService);
   });
 

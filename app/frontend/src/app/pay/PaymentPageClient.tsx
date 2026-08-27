@@ -251,12 +251,9 @@ function LoadingFallback() {
 }
 
 // Simple analytics tracking (replace with your analytics provider)
-function trackAnalyticsEvent(event: string, data: Record<string, unknown>) {
+function trackAnalyticsEvent(..._args: unknown[]) {
+  void _args;
   if (typeof window !== "undefined") {
     // Replace with your analytics provider (e.g., PostHog, Google Analytics, etc.)
-    // console.log(`[Analytics] ${event}`, data);
-
-    // Example: window.posthog?.capture(event, data);
-    // Example: window.gtag?.('event', event, data);
   }
 }
