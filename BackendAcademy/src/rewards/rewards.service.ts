@@ -355,9 +355,6 @@ export class RewardsService {
 
     if (this.monitoringService) {
       this.monitoringService.recordDomainEvent('prize_distributed', 'rewards');
-      this.monitoringService.incrementCounter('reward_redemptions_total', 1, {
-        poolId: id,
-      });
     }
 
     return {

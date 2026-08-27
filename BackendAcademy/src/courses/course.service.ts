@@ -65,18 +65,44 @@ export class CourseService {
     private readonly redisService?: RedisService,
   ) {}
 
+  /**
+   * #449: Course and initial revision are created atomically. If the
+   * revision append fails the course row is rolled back so callers never
+   * observe a course without an audit trail entry.
+   */
   async create(dto: CreateCourseDto): Promise<CourseEntity> {
+    const slug = await this.createUniqueSlug(dto.title);
     const course = this.courseRepo.create({
       id: crypto.randomUUID(),
       version: CourseService.INITIAL_VERSION,
+      slug,
       ...dto,
     });
-    const saved = await this.courseRepo.save(course);
-    await this.appendRevision(saved, 'create', {
-      changeNote: 'Initial version',
+
+    const txResult = await this.transactionManager.runAtomic(async (tx) => {
+      const saved = await this.courseRepo.save(course);
+
+      // Rollback: remove orphaned course if revision creation fails
+      await tx.addOperation(async (): Promise<TransactionSnapshot> => ({
+        restore: () => {
+          this.courseRepo.remove(saved);
+        },
+        data: { courseId: saved.id },
+      }));
+
+      await this.appendRevision(saved, 'create', {
+        changeNote: 'Initial version',
+      });
+
+      return saved;
     });
-    this.notifyContentChanged(saved, 'create');
-    return saved;
+
+    if (!txResult.success) {
+      throw txResult.error;
+    }
+
+    this.notifyContentChanged(txResult.result!, 'create');
+    return txResult.result!;
   }
 
   async findAll(): Promise<CourseEntity[]> {
@@ -93,6 +119,11 @@ export class CourseService {
     return this.courseRepo.findOne({ where: { id } });
   }
 
+  async findBySlugOrId(slugOrId: string): Promise<CourseEntity | null> {
+    const bySlug = await this.courseRepo.findOne({ where: { slug: slugOrId } });
+    return bySlug ?? this.findById(slugOrId);
+  }
+
   async update(id: string, dto: UpdateCourseDto): Promise<CourseEntity | null> {
     const course = await this.courseRepo.findOne({ where: { id } });
     if (!course) return null;
@@ -101,27 +132,96 @@ export class CourseService {
     course.version = previousVersion + 1;
     course.updatedAt = new Date();
     Object.assign(course, dto);
+    if (dto.title !== undefined) {
+      course.slug = await this.createUniqueSlug(dto.title, course.id);
+    }
     this.syncCourseTaxonomy(course, dto);
     const saved = await this.courseRepo.save(course);
 
-    await this.appendRevision(saved, 'update', {
-      changeNote: dto.changeNote,
-      revisionAuthor: dto.revisionAuthor,
-      previousVersion,
+    // #449: Rollback the course update if the revision append fails
+    const txResult = await this.transactionManager.runAtomic(async (tx) => {
+      // Snapshot of pre-mutation state for rollback
+      const originalVersion = previousVersion;
+      const originalUpdatedAt = course.updatedAt;
+      const originalSnapshot = { ...course };
+
+      await tx.addOperation(async (): Promise<TransactionSnapshot> => ({
+        restore: () => {
+          Object.assign(course, originalSnapshot);
+          course.version = originalVersion;
+          course.updatedAt = originalUpdatedAt;
+          this.courseRepo.save(course);
+        },
+        data: { courseId: id, previousVersion },
+      }));
+
+      await this.appendRevision(saved, 'update', {
+        changeNote: dto.changeNote,
+        revisionAuthor: dto.revisionAuthor,
+        previousVersion,
+      });
+
+      return saved;
     });
-    this.notifyContentChanged(saved, 'update');
-    return saved;
+
+    if (!txResult.success) {
+      throw txResult.error;
+    }
+
+    this.notifyContentChanged(txResult.result!, 'update');
+    return txResult.result!;
   }
 
+  /**
+   * #352: Soft-delete a course by marking it inactive rather than
+   * removing the row.  Hard deletion would break enrollments,
+   * revisions, certificates, and search history.
+   */
   async remove(id: string): Promise<boolean> {
     const course = await this.courseRepo.findOne({ where: { id } });
     if (!course) return false;
-    await this.courseRepo.remove(course);
+
+    const previousVersion = course.version;
+    course.isActive = false;
+    course.version = previousVersion + 1;
+    course.updatedAt = new Date();
+    const saved = await this.courseRepo.save(course);
+
+    await this.appendRevision(saved, 'update', {
+      changeNote: 'Course soft-deleted',
+      previousVersion,
+    });
+
     // #369: keep the search index in sync with removals
     this.searchIndexer?.removeCourse(id);
     // #379: drop any cached entries derived from this course
     await this.redisService?.invalidateContentCache('course', id);
+
+    this.notifyContentChanged(saved, 'update');
     return true;
+  }
+
+  /**
+   * #352: Restore a soft-deleted course.  The restore is recorded as
+   * a new revision so the lifecycle is fully auditable.
+   */
+  async restoreCourse(id: string): Promise<CourseEntity | null> {
+    const course = await this.courseRepo.findOne({ where: { id } });
+    if (!course) return null;
+
+    const previousVersion = course.version;
+    course.isActive = true;
+    course.version = previousVersion + 1;
+    course.updatedAt = new Date();
+    const saved = await this.courseRepo.save(course);
+
+    await this.appendRevision(saved, 'restore', {
+      changeNote: 'Course restored from soft-delete',
+      previousVersion,
+    });
+
+    this.notifyContentChanged(saved, 'restore');
+    return saved;
   }
 
   /**
@@ -422,6 +522,29 @@ export class CourseService {
     if (dto.categories?.length && !dto.category) {
       course.category = dto.categories[0];
     }
+  }
+
+  private async createUniqueSlug(title: string, excludeId?: string): Promise<string> {
+    const baseSlug = this.normalizeSlug(title);
+    let slug = baseSlug;
+    let suffix = 2;
+
+    while (true) {
+      const existing = await this.courseRepo.findOne({ where: { slug } });
+      if (!existing || existing.id === excludeId) return slug;
+      slug = `${baseSlug}-${suffix}`;
+      suffix += 1;
+    }
+  }
+
+  private normalizeSlug(title: string): string {
+    const normalized = title
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+    return normalized || 'course';
   }
 
   async getOrFail(id: string): Promise<CourseEntity> {
