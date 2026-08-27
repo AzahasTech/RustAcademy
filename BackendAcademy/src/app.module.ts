@@ -3,16 +3,22 @@ import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottleModule } from '@nestjs/throttler';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { AdminModule } from './admin/admin.module';
 import { AuthModule } from './auth/auth.module';
+import { BadgesModule } from './badges/badges.module';
 import { ChallengesModule } from './challenges/challenges.module';
+import { ChatModule } from './chat/chat.module';
 import { RewardsModule } from './rewards/rewards.module';
 import { SecurityModule } from './security/security.module';
 import { SubmissionModule } from './submissions/submission.module';
+import { UsersModule } from './users/users.module';
 import { TutorProfileModule } from './users/tutor-profile.module';
 import { ContractsModule } from './contracts/contracts.module';
 import { UserProfileModule } from './users/user-profile.module';
 import { AppConfigModule } from './config/config.module';
 import { AssetsModule } from './assets/assets.module';
+import { DatabaseModule } from './database/database.module';
+import { DlqModule } from './dead-letter-queue/dlq.module';
 import { PathfindingModule } from './pathfinding/pathfinding.module';
 import { MonitoringModule } from './monitoring/monitoring.module';
 import { SearchModule } from './search/search.module';
@@ -22,25 +28,33 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { HealthModule } from './health/health.module';
 import { CorrelationIdMiddleware } from './common/correlation-id.middleware';
 import { AiModule } from './ai/ai.module';
+import { JobsModule } from './jobs/jobs.module';
 import { LeaderboardModule } from './leaderboard/leaderboard.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { WalletModule } from './wallet/wallet.module';
 import { SocialModule } from './social/social.module';
 import { OnboardingModule } from './onboarding/onboarding.module';
-import { LessonModule } from './lesson/lesson.module';
-import { TaskModule } from './task/task.module';
-import { CourseModule } from './course/course.module';
+import { LessonModule } from './lessons/lesson.module';
+import { TaskModule } from './tasks/task.module';
+import { CourseModule } from './courses/course.module';
 import { LoggingModule } from './logging/logging.module';
-import { ProgressModule } from './progress/progress.module';
+import { ProgressModule } from './courses/progress/progress.module';
 import { RedisModule } from './redis/redis.module';
+import { ReportsModule } from './reports/reports.module';
+import { SessionsModule } from './sessions/sessions.module';
 
 @Module({
   imports: [
     AppConfigModule,
     ThrottlerModule.forRoot([{ ttl: 60000, limit: 10 }]),
+    DatabaseModule,
+    RedisModule,
     AuthModule,
     ContractsModule,
-    RedisModule,
+    AdminModule,
+    BadgesModule,
+    ChatModule,
+    UsersModule,
     UserProfileModule,
     TutorProfileModule,
     SubmissionModule,
@@ -56,11 +70,15 @@ import { RedisModule } from './redis/redis.module';
     LessonModule,
     TaskModule,
     CourseModule,
+    ProgressModule,
+    SessionsModule,
+    ReportsModule,
+    JobsModule,
+    DlqModule,
     AssetsModule,
     LoggingModule,
     PathfindingModule,
     MonitoringModule,
-    ProgressModule,
     SearchModule,
     PaymentsModule,
     I18nModule,
