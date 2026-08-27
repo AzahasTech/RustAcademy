@@ -8,7 +8,7 @@ import { ThrottlerModule } from "@nestjs/throttler";
 import { ScheduleModule } from "@nestjs/schedule";
 import { APP_GUARD, APP_INTERCEPTOR } from "@nestjs/core";
 
-import { AppConfigModule, envSchema, EnvConfig } from "./config";
+import { AppConfigModule, validateEnv } from "./config";
 import { AssetMetadataModule } from "./asset-metadata/asset-metadata.module";
 import { HealthModule } from "./health/health.module";
 import { StellarModule } from "./stellar/stellar.module";
@@ -23,6 +23,7 @@ import { PaymentsModule } from "./payments/payments.module";
 import { MetricsMiddleware } from "./metrics/metrics.middleware";
 import { MetricsInterceptor } from "./metrics/metrics.interceptor";
 import { CorrelationIdMiddleware } from "./common/middleware/correlation-id.middleware";
+import { CorrelationContextModule } from "./common/correlation/correlation-context.module";
 import { OrganizationContextMiddleware } from "./common/middleware/organization-context.middleware";
 import { ShadowTrafficMiddleware } from "./environment-parity/shadow-traffic.middleware";
 import { IngestionModule } from "./ingestion/ingestion.module";
@@ -49,14 +50,14 @@ import { getDynamicModules } from "./module-factory";
 import { ChatModule } from "./chat/chat.module";
 
 // Validate environment variables for module composition.
-// This ensures that feature flags are deterministic and typed.
-const validatedEnv = envSchema.validate(process.env, {
-  allowUnknown: true,
-  abortEarly: false,
-}).value as EnvConfig;
+// This ensures that feature flags are deterministic and typed, and fails
+// fast (before the application is created) when required configuration is
+// missing or invalid.
+const validatedEnv = validateEnv(process.env);
 
 @Module({
   imports: [
+    CorrelationContextModule,
     SentryModule,
     AppConfigModule,
     // ScheduleModule registered once here — shared by NotificationsModule and ReconciliationModule

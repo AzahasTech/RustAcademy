@@ -1,7 +1,8 @@
-import { Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, Optional, ConflictException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { CourseEntity } from './course.entity';
+import { CourseLevel } from './interfaces/course-level.enum';
 import {
   CourseRevisionEntity,
   CourseRevisionReason,
@@ -15,6 +16,8 @@ import {
   TransactionSnapshot,
 } from '../common/transaction-manager.service';
 import { CertificateService, CertificateRecord } from './certificate.service';
+import { SearchIndexerService } from '../search/search-indexer.service';
+import { RedisService } from '../redis/redis.service';
 
 /**
  * Business logic for courses.
@@ -57,19 +60,52 @@ export class CourseService {
     private readonly certificateService: CertificateService,
     @Optional()
     private readonly contractAdapter?: IContractAdapter,
+    @Optional()
+    private readonly searchIndexer?: SearchIndexerService,
+    @Optional()
+    private readonly redisService?: RedisService,
   ) {}
 
+  /**
+   * #449: Course and initial revision are created atomically. If the
+   * revision append fails the course row is rolled back so callers never
+   * observe a course without an audit trail entry.
+   */
   async create(dto: CreateCourseDto): Promise<CourseEntity> {
+    // BA-047: bound + canonicalize taxonomy before anything is persisted.
+    const normalized = this.normalizeCourseInput(dto);
+    const slug = await this.createUniqueSlug(normalized.title ?? dto.title);
     const course = this.courseRepo.create({
       id: crypto.randomUUID(),
       version: CourseService.INITIAL_VERSION,
-      ...dto,
+      slug,
+      ...normalized,
     });
-    const saved = await this.courseRepo.save(course);
-    await this.appendRevision(saved, 'create', {
-      changeNote: 'Initial version',
+
+    const txResult = await this.transactionManager.runAtomic(async (tx) => {
+      const saved = await this.courseRepo.save(course);
+
+      // Rollback: remove orphaned course if revision creation fails
+      await tx.addOperation(async (): Promise<TransactionSnapshot> => ({
+        restore: () => {
+          this.courseRepo.remove(saved);
+        },
+        data: { courseId: saved.id },
+      }));
+
+      await this.appendRevision(saved, 'create', {
+        changeNote: 'Initial version',
+      });
+
+      return saved;
     });
-    return saved;
+
+    if (!txResult.success) {
+      throw txResult.error;
+    }
+
+    this.notifyContentChanged(txResult.result!, 'create');
+    return txResult.result!;
   }
 
   async findAll(): Promise<CourseEntity[]> {
@@ -86,30 +122,139 @@ export class CourseService {
     return this.courseRepo.findOne({ where: { id } });
   }
 
+  async findBySlugOrId(slugOrId: string): Promise<CourseEntity | null> {
+    const bySlug = await this.courseRepo.findOne({ where: { slug: slugOrId } });
+    return bySlug ?? this.findById(slugOrId);
+  }
+
   async update(id: string, dto: UpdateCourseDto): Promise<CourseEntity | null> {
     const course = await this.courseRepo.findOne({ where: { id } });
     if (!course) return null;
 
+    // BA-047: bound + canonicalize taxonomy so only canonical values persist.
+    const normalized = this.normalizeCourseInput(dto);
+
     const previousVersion = course.version;
     course.version = previousVersion + 1;
     course.updatedAt = new Date();
-    Object.assign(course, dto);
-    this.syncCourseTaxonomy(course, dto);
+    Object.assign(course, normalized);
+    if (normalized.title !== undefined) {
+      course.slug = await this.createUniqueSlug(normalized.title, course.id);
+    }
+    this.syncCourseTaxonomy(course, normalized);
     const saved = await this.courseRepo.save(course);
 
-    await this.appendRevision(saved, 'update', {
-      changeNote: dto.changeNote,
-      revisionAuthor: dto.revisionAuthor,
-      previousVersion,
+    // #449: Rollback the course update if the revision append fails
+    const txResult = await this.transactionManager.runAtomic(async (tx) => {
+      // Snapshot of pre-mutation state for rollback
+      const originalVersion = previousVersion;
+      const originalUpdatedAt = course.updatedAt;
+      const originalSnapshot = { ...course };
+
+      await tx.addOperation(async (): Promise<TransactionSnapshot> => ({
+        restore: () => {
+          Object.assign(course, originalSnapshot);
+          course.version = originalVersion;
+          course.updatedAt = originalUpdatedAt;
+          this.courseRepo.save(course);
+        },
+        data: { courseId: id, previousVersion },
+      }));
+
+      await this.appendRevision(saved, 'update', {
+        changeNote: dto.changeNote,
+        revisionAuthor: dto.revisionAuthor,
+        previousVersion,
+      });
+
+      return saved;
     });
-    return saved;
+
+    if (!txResult.success) {
+      throw txResult.error;
+    }
+
+    this.notifyContentChanged(txResult.result!, 'update');
+    return txResult.result!;
   }
 
+  /**
+   * #352: Soft-delete a course by marking it inactive rather than
+   * removing the row.  Hard deletion would break enrollments,
+   * revisions, certificates, and search history.
+   */
   async remove(id: string): Promise<boolean> {
     const course = await this.courseRepo.findOne({ where: { id } });
     if (!course) return false;
-    await this.courseRepo.remove(course);
+
+    const previousVersion = course.version;
+    course.isActive = false;
+    course.version = previousVersion + 1;
+    course.updatedAt = new Date();
+    const saved = await this.courseRepo.save(course);
+
+    await this.appendRevision(saved, 'update', {
+      changeNote: 'Course soft-deleted',
+      previousVersion,
+    });
+
+    // #369: keep the search index in sync with removals
+    this.searchIndexer?.removeCourse(id);
+    // #379: drop any cached entries derived from this course
+    await this.redisService?.invalidateContentCache('course', id);
+
+    this.notifyContentChanged(saved, 'update');
     return true;
+  }
+
+  /**
+   * #352: Restore a soft-deleted course.  The restore is recorded as
+   * a new revision so the lifecycle is fully auditable.
+   */
+  async restoreCourse(id: string): Promise<CourseEntity | null> {
+    const course = await this.courseRepo.findOne({ where: { id } });
+    if (!course) return null;
+
+    const previousVersion = course.version;
+    course.isActive = true;
+    course.version = previousVersion + 1;
+    course.updatedAt = new Date();
+    const saved = await this.courseRepo.save(course);
+
+    await this.appendRevision(saved, 'restore', {
+      changeNote: 'Course restored from soft-delete',
+      previousVersion,
+    });
+
+    this.notifyContentChanged(saved, 'restore');
+    return saved;
+  }
+
+  /**
+   * Notify downstream consumers (search index, Redis cache) that a course
+   * has been created, updated, or restored. Failures here are logged but
+   * never bubble up — a transient indexer/cache miss must not break the
+   * primary write path.
+   */
+  private notifyContentChanged(course: CourseEntity, _op: 'create' | 'update' | 'restore'): void {
+    try {
+      this.searchIndexer?.indexCourse(course);
+    } catch (err) {
+      this.logger.warn(
+        `[#369] search index update failed for course ${course.id}: ${(err as Error).message}`,
+      );
+    }
+    // Fire-and-forget the cache invalidation so we don't block the write.
+    // Swallow async rejections explicitly to keep them out of the
+    // unhandled-rejection log.
+    const invalidation = this.redisService?.invalidateContentCache('course', course.id);
+    if (invalidation && typeof invalidation.catch === 'function') {
+      invalidation.catch((err: Error) => {
+        this.logger.warn(
+          `[#379] redis cache invalidation failed for course ${course.id}: ${err.message}`,
+        );
+      });
+    }
   }
 
   // ──────────────────────────────────────────────────────────────────
@@ -191,6 +336,7 @@ export class CourseService {
       previousVersion,
       referenceRevisionId: sourceRevision.id,
     });
+    this.notifyContentChanged(saved, 'restore');
     return saved;
   }
 
@@ -382,6 +528,115 @@ export class CourseService {
     if (dto.categories?.length && !dto.category) {
       course.category = dto.categories[0];
     }
+  }
+
+  /**
+   * BA-047: Canonicalize course taxonomy input so that only bounded,
+   * normalized values reach persistence.
+   *
+   * - Free-text fields (title, description, category) are trimmed and
+   *   inner whitespace is collapsed.
+   * - The enum level is lower-cased to its canonical `CourseLevel` value.
+   * - Taxonomy arrays (categories, tags, prerequisites, skills) are
+   *   trimmed, lower-cased, de-duplicated, and have blank items removed.
+   */
+  private normalizeCourseInput<T extends Partial<CreateCourseDto>>(
+    input: T,
+  ): Partial<CourseEntity> {
+    const normalized: Partial<CourseEntity> = { ...input } as Partial<
+      CourseEntity
+    >;
+
+    if (typeof normalized.title === 'string') {
+      normalized.title = this.collapseWhitespace(normalized.title);
+    }
+    if (typeof normalized.description === 'string') {
+      normalized.description = normalized.description.trim();
+    }
+    if (typeof normalized.category === 'string') {
+      normalized.category = this.normalizeTaxonomyItem(normalized.category);
+    }
+    if (typeof normalized.level === 'string') {
+      normalized.level = this.canonicalizeLevel(normalized.level);
+    }
+
+    // Only normalize taxonomy arrays that were actually provided, so an
+    // absent field on update never overwrites already-persisted values with
+    // an empty/undefined array.
+    if (Array.isArray(input.categories)) {
+      normalized.categories = this.normalizeTaxonomy(input.categories);
+    }
+    if (Array.isArray(input.tags)) {
+      normalized.tags = this.normalizeTaxonomy(input.tags);
+    }
+    if (Array.isArray(input.prerequisites)) {
+      normalized.prerequisites = this.normalizeTaxonomy(input.prerequisites);
+    }
+    if (Array.isArray(input.skills)) {
+      normalized.skills = this.normalizeTaxonomy(input.skills);
+    }
+
+    return normalized;
+  }
+
+  private collapseWhitespace(value: string): string {
+    return value.trim().replace(/\s+/g, ' ');
+  }
+
+  private normalizeTaxonomyItem(value: string): string {
+    return value
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, ' ');
+  }
+
+  private normalizeTaxonomy(values: string[]): string[] {
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const raw of values) {
+      const item = this.normalizeTaxonomyItem(raw ?? '');
+      if (item && !seen.has(item)) {
+        seen.add(item);
+        result.push(item);
+      }
+    }
+    return result;
+  }
+
+  private canonicalizeLevel(level: string): CourseLevel {
+    const canonical = level.trim().toLowerCase();
+    if (
+      canonical === CourseLevel.BEGINNER ||
+      canonical === CourseLevel.INTERMEDIATE ||
+      canonical === CourseLevel.ADVANCED ||
+      canonical === CourseLevel.WEB3
+    ) {
+      return canonical as CourseLevel;
+    }
+    return level as CourseLevel;
+  }
+
+  private async createUniqueSlug(title: string, excludeId?: string): Promise<string> {
+    const baseSlug = this.normalizeSlug(title);
+    let slug = baseSlug;
+    let suffix = 2;
+
+    while (true) {
+      const existing = await this.courseRepo.findOne({ where: { slug } });
+      if (!existing || existing.id === excludeId) return slug;
+      slug = `${baseSlug}-${suffix}`;
+      suffix += 1;
+    }
+  }
+
+  private normalizeSlug(title: string): string {
+    const normalized = title
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+    return normalized || 'course';
   }
 
   async getOrFail(id: string): Promise<CourseEntity> {

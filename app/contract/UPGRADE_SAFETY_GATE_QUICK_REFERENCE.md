@@ -250,6 +250,7 @@ migration completes.
 
 ## Related Documentation
 
+- **EMERGENCY_RECOVERY_PLAYBOOK.md**: Emergency recovery, lockout mitigation, and stalled upgrade resets
 - **UPGRADE_SAFETY_GATE.md**: Full spec, usage examples, checklist
 - **IMPLEMENTATION_SUMMARY.md**: What was built, file changes, test matrix
 - **upgrade_test.rs**: Test code and fixtures

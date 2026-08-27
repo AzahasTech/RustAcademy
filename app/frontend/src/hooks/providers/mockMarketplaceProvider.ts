@@ -12,6 +12,7 @@ import type {
   UserBid,
   UserListing,
 } from "@/hooks/marketplaceApi";
+import { validateBidRequest } from "@/hooks/marketplaceApi";
 
 // ── Static mock data ─────────────────────────────────────────────────────────
 
@@ -197,6 +198,13 @@ export const mockMarketplaceProvider: MarketplaceApiProvider = {
   },
 
   async placeBid(username: string, amount: number): Promise<BidResult> {
+    // Enforce the exact same request-shape contract as the production
+    // provider so local dev and tests mirror real submission behaviour.
+    const validation = validateBidRequest(username, amount);
+    if (!validation.ok) {
+      return { success: false, reason: validation.reason };
+    }
+
     return new Promise((resolve) => {
       setTimeout(() => {
         // Simulate ~10 % wallet-rejection rate.

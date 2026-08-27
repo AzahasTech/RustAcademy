@@ -415,6 +415,7 @@ Result: Net payout = 0, Fee = 50
 
 ## See Also
 
+- [Emergency Recovery Playbook](./documentation/EMERGENCY_RECOVERY_PLAYBOOK.md) — Emergency fee configuration recovery procedures
 - [README.md](./README.md) — General contract overview
 - [types.rs](./contracts/Folder/src/types.rs) — `PerAssetFeeConfig` and `FeeRatio` definitions
 - [fee_router.rs](./contracts/Folder/src/fee_router.rs) — Fee routing logic

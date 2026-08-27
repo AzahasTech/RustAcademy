@@ -147,6 +147,29 @@ describe("placeBid", () => {
       reason: expect.stringContaining("rejected"),
     });
   });
+
+  it.each([
+    ["empty username", "", 100],
+    ["NaN amount", "nova", NaN],
+    ["zero amount", "nova", 0],
+    ["negative amount", "nova", -1],
+  ])("rejects %s immediately, mirroring the production request contract", async (_label, username, amount) => {
+    let resolved = false;
+    const promise = mockMarketplaceProvider
+      .placeBid(username as string, amount as number)
+      .then((result) => {
+        resolved = true;
+        return result;
+      });
+
+    // Rejected synchronously — no simulated wallet delay is scheduled.
+    await Promise.resolve();
+    expect(resolved).toBe(true);
+    await expect(promise).resolves.toMatchObject({
+      success: false,
+      reason: expect.any(String),
+    });
+  });
 });
 
 // ── formatCountdown ───────────────────────────────────────────────────────────

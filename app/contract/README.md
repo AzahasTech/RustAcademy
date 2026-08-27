@@ -175,11 +175,25 @@ stellar contract deploy \
 * Duplicate submission prevention
 * Reward throttling
 
-### Access Control
+### Access Control & Governance Boundaries
 
-* Admin-only functions
-* Tutor-only functions
-* Governance-controlled upgrades
+The contract enforces a three-tier authorization model to minimize privilege drift
+and prevent routine operational actions from accidentally triggering
+protocol-changing decisions:
+
+| Role          | Privilege Level | Scope |
+|---------------|----------------|-------|
+| **Governance** | Highest         | Protocol-changing decisions: emergency mode activation, upgrade lifecycle (`start_upgrade`, `upgrade`, `complete_upgrade`, `cancel_upgrade`), upgrade window and gate configuration |
+| **Admin**      | High            | Routine admin operations: pause/unpause, role management, fee configuration, platform wallet, hook registration, fee collector rotation |
+| **Operator**   | Moderate        | Day-to-day operational tasks: pause flags, fee configuration |
+
+**Key invariants:**
+- Admin-only actions require `Role::Admin` and do not rely on ambient or stale authority state.
+- Governance-specific flows are isolated from routine operational paths and are easier to audit.
+- Emergency mode activation is irreversible and requires Governance-level authority only.
+- Upgrade lifecycle is gated behind the Governance role to enforce dual-control.
+- Hook registration is admin-gated to prevent unauthorized callback injection.
+- Security tests validate role checks for normal admin, governance, and unauthorized user paths.
 
 ### Financial Safety
 
@@ -200,6 +214,46 @@ The contract enforces full runtime schema validation (`validate_event_schemas`) 
 - Alphabetically sorted payload keys without duplicates.
 - Presence of all required replay fields.
 - Runtime cross-checking of all emitted events against `EVENT_SCHEMAS`.
+
+### Event Deduplication & Pre-Publish Validation (Issue #560)
+
+The contract provides two layers of protection against malformed payloads, duplicate events, and schema drift:
+
+#### 1. Pre-Publish Validation (`validate_emission_preconditions`)
+
+Before any event is published, `validate_emission_preconditions` validates:
+- The event type ID is non-zero and matches a registered schema.
+- The schema version matches the current `EVENT_SCHEMA_VERSION` (prevents schema drift).
+- The domain namespace is valid (`TOPIC_ADMIN`, `TOPIC_ESCROW`, etc.).
+- The event is not a duplicate of a previously emitted event.
+
+#### 2. Deterministic Event Deduplication
+
+Every emission is recorded in persistent storage using a 32-byte SHA-256 key derived from the core replay fields: `(event_type_id, ledger_sequence, schema_version, timestamp)`. This provides:
+
+- **At-most-once delivery**: identical replay field tuples are rejected.
+- **TTL-based expiry**: dedup entries expire after 6 months of ledgers, preventing unbounded storage growth.
+- **Cross-field sensitivity**: any change to any replay field produces a fresh dedup key.
+
+```rust
+// Example: check and record in a single call
+let is_fresh = events::check_and_record_event_dedup(
+    &env, event_type_id, ledger_sequence, schema_version, timestamp
+)?;
+if !is_fresh {
+    return Err(RustAcademyError::DuplicateEvent);
+}
+```
+
+#### API Reference
+
+| Function | Purpose |
+|----------|---------|
+| `validate_emission_preconditions(env, etid, version, ledger, ts)` | Full pre-publish check: schema lookup + namespace + dedup. |
+| `check_and_record_event_dedup(env, etid, ledger, version, ts)` | Atomic check-and-record for event deduplication. |
+| `compute_event_dedup_key(env, etid, ledger, version, ts)` | Derive the 32-byte dedup key from replay fields. |
+| `check_event_dedup(env, key)` | Check whether a dedup key has been recorded. |
+| `record_event_emission(env, key)` | Record a dedup key with 6-month TTL. |
 
 ---
 
@@ -332,6 +386,15 @@ The `Folder` contract exposes a stable, read-only metadata surface for tooling, 
 | `get_pause_flags()` | Granular pause bitmask. |
 
 Tooling should call `check_schema_compatibility` before sending writes to avoid version mismatches.
+
+## Operational & Emergency Recovery Guides
+
+For detailed operational procedures, upgrade safety gates, fee routing, and emergency mitigation:
+- [Emergency Recovery Playbook](file:///Users/m-ibinola/.gemini/antigravity/scratch/RustAcademy/app/contract/documentation/EMERGENCY_RECOVERY_PLAYBOOK.md)
+- [Fee Configuration Guide](file:///Users/m-ibinola/.gemini/antigravity/scratch/RustAcademy/app/contract/FEE_CONFIGURATION_GUIDE.md)
+- [Upgrade Safety Gate Quick Reference](file:///Users/m-ibinola/.gemini/antigravity/scratch/RustAcademy/app/contract/UPGRADE_SAFETY_GATE_QUICK_REFERENCE.md)
+- [Upgrade Safety Gate Implementation](file:///Users/m-ibinola/.gemini/antigravity/scratch/RustAcademy/app/contract/UPGRADE_SAFETY_GATE_IMPLEMENTATION.md)
+- [Deployment Playbook](file:///Users/m-ibinola/.gemini/antigravity/scratch/RustAcademy/app/contract/documentation/deployment-playbook.md)
 
 ## Testing Requirements
 

@@ -1,19 +1,36 @@
-import { Module, MiddlewareConsumer, NestModule } from '@nestjs/common';
-import { APP_GUARD } from '@nestjs/core';
-import { ConfigService } from '@nestjs/config';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { Module, MiddlewareConsumer, NestModule, ValidationPipe } from '@nestjs/common';
+import { APP_GUARD, APP_FILTER, APP_INTERCEPTOR, APP_PIPE } from '@nestjs/core';
+import { ThrottleGuard, ThrottleModule } from '@nestjs/throttler';
 import { AppController } from './app.controller';
-import { ApiInfoController } from './api-info.controller';
 import { AppService } from './app.service';
+import { AdminModule } from './admin/admin.module';
 import { AuthModule } from './auth/auth.module';
+import { BadgesModule } from './badges/badges.module';
 import { ChallengesModule } from './challenges/challenges.module';
+import { ChatModule } from './chat/chat.module';
 import { RewardsModule } from './rewards/rewards.module';
 import { SecurityModule } from './security/security.module';
 import { SubmissionModule } from './submissions/submission.module';
+import { UsersModule } from './users/users.module';
 import { TutorProfileModule } from './users/tutor-profile.module';
 import { ContractsModule } from './contracts/contracts.module';
 import { UserProfileModule } from './users/user-profile.module';
+import { AppConfigModule } from './config/config.module';
+import { AssetsModule } from './assets/assets.module';
+import { DatabaseModule } from './database/database.module';
+import { DlqModule } from './dead-letter-queue/dlq.module';
+import { PathfindingModule } from './pathfinding/pathfinding.module';
+import { MonitoringModule } from './monitoring/monitoring.module';
+import { SearchModule } from './search/search.module';
+import { PaymentsModule } from './payments/payments.module';
+import { I18nModule } from './i18n/i18n.module';
+import { NotificationsModule } from './notifications/notifications.module';
+import { HealthModule } from './health/health.module';
+import { CorrelationIDMiddleware } from './common/correlation-id.middleware';
+import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import { TransformInterceptor } from './common/interceptors/transform.interceptor';
 import { AiModule } from './ai/ai.module';
+import { JobsModule } from './jobs/jobs.module';
 import { LeaderboardModule } from './leaderboard/leaderboard.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { WalletModule } from './wallet/wallet.module';
@@ -21,47 +38,30 @@ import { SocialModule } from './social/social.module';
 import { OnboardingModule } from './onboarding/onboarding.module';
 import { LessonModule } from './lessons/lesson.module';
 import { TaskModule } from './tasks/task.module';
-import { CourseModule } from './courses';
+import { CourseModule } from './courses/course.module';
 import { LoggingModule } from './logging/logging.module';
 import { ProgressModule } from './courses/progress/progress.module';
-import { AppConfigModule } from './config/config.module';
-import { AssetsModule } from './assets/assets.module';
-import { PathfindingModule } from './pathfinding/pathfinding.module';
-import { MonitoringModule } from './monitoring/monitoring.module';
-import { SearchModule } from './search/search.module';
-import { PaymentsModule } from './payments/payments.module';
-import { I18nModule } from './i18n/i18n.module';
-import { NotificationsModule } from './notifications/notifications.module';
-import { DlqModule } from './dead-letter-queue/dlq.module';
-import { CorrelationIdMiddleware } from './common/correlation-id.middleware';
+import { RedisModule } from './redis/redis.module';
+import { ReportsModule } from './reports/reports.module';
+import { SessionsModule } from './sessions/sessions.module';
+import { AuditModule } from './audit/audit.module';
+import { HintsModule } from './hints/hint.module';
 
-/**
- * Root application module.
- *
- * #395: Contract ingestion is gated behind the CONTRACT_INGESTION_ENABLED
- * feature flag. The ContractsModule itself handles the gate internally —
- * when ingestion is disabled, contract invocation & deployment will return
- * a clear error rather than silently failing. This ensures no accidental
- * contract processing occurs when env vars are misconfigured.
- *
- * Duplicate module imports from the original have been consolidated.
- */
 @Module({
   imports: [
     AppConfigModule,
-    ThrottlerModule.forRootAsync({
-      inject: [ConfigService],
-      // Values come from the validated env schema so local and container
-      // deployments always agree on types and defaults.
-      useFactory: (config: ConfigService) => [
-        {
-          limit: config.get<number>('THROTTLE_LIMIT', 10),
-          ttl: config.get<number>('THROTTLE_TTL_MS', 60_000),
-        },
-      ],
-    }),
+    ThrottlerModule.forRoot([{ ttl: 60000, limit: 10 }]),
+    DatabaseModule,
+    RedisModule,
     AuthModule,
     ContractsModule,
+    AdminModule,
+    BadgesModule,
+    ChatModule,
+    UsersModule,
+    ContractsModule,
+    RedisModule,
+    AuditModule,
     UserProfileModule,
     TutorProfileModule,
     SubmissionModule,
@@ -77,29 +77,33 @@ import { CorrelationIdMiddleware } from './common/correlation-id.middleware';
     LessonModule,
     TaskModule,
     CourseModule,
+    ProgressModule,
+    SessionsModule,
+    ReportsModule,
+    JobsModule,
+    DlqModule,
     AssetsModule,
     LoggingModule,
     PathfindingModule,
     MonitoringModule,
-    ProgressModule,
     SearchModule,
     PaymentsModule,
     I18nModule,
     NotificationsModule,
-    DlqModule,
+    HealthModule,
+    HintsModule,
   ],
-  controllers: [AppController, ApiInfoController],
+  controllers: [AppController],
   providers: [
     AppService,
-    {
-      provide: APP_GUARD,
-      useClass: ThrottlerGuard,
-    },
+    { provide: APP_GUARD, useClass: ThrottleGuard },
+    { provide: APP_FILTER, useClass: AllExceptionsFilter },
+    { provide: APP_INTERCEPTOR, useClass: TransformInterceptor },
+    { provide: APP_PIPE, useValue: new ValidationPipe({ transform: true }) },
   ],
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
-    consumer.apply(CorrelationIdMiddleware).forRoutes('*');
+    consumer.apply(CorrelationIDMiddleware).forRoutes('*');
   }
 }
-export class AppModule {}

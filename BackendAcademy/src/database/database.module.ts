@@ -6,6 +6,10 @@ import { MigrationController } from './migration.controller';
 import { DatabaseService } from './database.service';
 import { TransactionManagerService } from '../common/transaction-manager.service';
 
+export function shouldSynchronizeSchema(nodeEnv: string | undefined): boolean {
+  return !['production', 'staging'].includes(nodeEnv ?? 'development');
+}
+
 @Global()
 @Module({
   imports: [
@@ -15,7 +19,8 @@ import { TransactionManagerService } from '../common/transaction-manager.service
         type: 'postgres',
         url: config.get<string>('DATABASE_URL'),
         autoLoadEntities: true,
-        synchronize: config.get('NODE_ENV') !== 'production',
+        // Schema changes in deployed environments must go through migrations.
+        synchronize: shouldSynchronizeSchema(config.get<string>('NODE_ENV', 'development')),
         ssl: config.get('NODE_ENV') === 'production' ? { rejectUnauthorized: false } : false,
       }),
       inject: [ConfigService],

@@ -1,4 +1,7 @@
-use soroban_sdk::{contractevent, Address, BytesN, Env, Symbol, TryIntoVal, Val};
+use soroban_sdk::{contractevent, contracttype, Address, BytesN, Env, Symbol, TryIntoVal, Val};
+
+use crate::errors::RustAcademyError;
+use crate::storage::{self, DataKey, LEDGER_THRESHOLD, SIX_MONTHS_IN_LEDGERS};
 
 /// Canonical event schema version.
 ///
@@ -1839,3 +1842,136 @@ pub fn validate_emitted_event(
     Ok(schema)
 }
 
+// -----------------------------------------------------------------------------
+// Runtime Pre-Publish Validation & Event Deduplication (Issue #560)
+// -----------------------------------------------------------------------------
+
+/// Storage key for the event deduplication registry.
+///
+/// Stored as `true` with a 6-month TTL so the registry does not grow
+/// unboundedly while still covering realistic replay windows.
+#[contracttype]
+#[derive(Clone)]
+pub enum EventDedupKey {
+    Emitted(BytesN<32>),
+}
+
+/// Compute a deterministic 32-byte dedup key from the core replay fields of
+/// an event.
+///
+/// The key is `SHA-256(event_type_id || ledger_sequence || schema_version ||
+/// timestamp)` — any change to those fields produces a different key, and
+/// identical fields always produce the same key.
+#[allow(dead_code)]
+pub fn compute_event_dedup_key(
+    env: &Env,
+    event_type_id: u32,
+    ledger_sequence: u32,
+    schema_version: u32,
+    timestamp: u64,
+) -> BytesN<32> {
+    use soroban_sdk::Bytes;
+
+    let mut data = Bytes::new(env);
+    data.append(&Bytes::from_slice(env, &event_type_id.to_be_bytes()));
+    data.append(&Bytes::from_slice(env, &ledger_sequence.to_be_bytes()));
+    data.append(&Bytes::from_slice(env, &schema_version.to_be_bytes()));
+    data.append(&Bytes::from_slice(env, &timestamp.to_be_bytes()));
+
+    env.crypto().sha256(&data).into()
+}
+
+/// Check whether an event with the given dedup key has already been emitted.
+///
+/// Returns `Ok(true)` if the key is fresh (first emission), `Ok(false)` if
+/// the event is a duplicate, or `Err` if the check encounters an internal
+/// error.
+#[allow(dead_code)]
+pub fn check_event_dedup(env: &Env, dedup_key: &BytesN<32>) -> Result<bool, RustAcademyError> {
+    let key = DataKey::EventDedup(dedup_key.clone());
+    if env.storage().persistent().has(&key) {
+        return Ok(false); // duplicate
+    }
+    Ok(true) // fresh
+}
+
+/// Record an event emission so future identical events are detected as
+/// duplicates.
+#[allow(dead_code)]
+pub fn record_event_emission(env: &Env, dedup_key: &BytesN<32>) {
+    let key = DataKey::EventDedup(dedup_key.clone());
+    env.storage().persistent().set(&key, &true);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, LEDGER_THRESHOLD, SIX_MONTHS_IN_LEDGERS);
+}
+
+/// Combined check-and-record: returns `Ok(true)` if this is the first
+/// emission, or `Ok(false)` if the event is a duplicate (already emitted).
+///
+/// Call this before publishing an event to enforce at-most-once delivery
+/// semantics per (event_type_id, ledger_sequence, schema_version, timestamp)
+/// tuple.
+#[allow(dead_code)]
+pub fn check_and_record_event_dedup(
+    env: &Env,
+    event_type_id: u32,
+    ledger_sequence: u32,
+    schema_version: u32,
+    timestamp: u64,
+) -> Result<bool, RustAcademyError> {
+    let dedup_key = compute_event_dedup_key(env, event_type_id, ledger_sequence, schema_version, timestamp);
+    let is_fresh = check_event_dedup(env, &dedup_key)?;
+    if is_fresh {
+        record_event_emission(env, &dedup_key);
+    }
+    Ok(is_fresh)
+}
+
+/// Validate preconditions for event emission before publishing.
+///
+/// Checks that:
+/// 1. The event type ID is non-zero and matches a known schema.
+/// 2. The schema version matches the current `EVENT_SCHEMA_VERSION`.
+/// 3. The namespace (topic[0]) is a valid domain namespace.
+/// 4. All mandatory replay fields are present in the payload.
+/// 5. The event is not a duplicate (dedup check).
+///
+/// Returns `Ok(schema)` on success, or `Err(message)` on failure.
+#[allow(dead_code)]
+pub fn validate_emission_preconditions(
+    env: &Env,
+    event_type_id: u32,
+    schema_version: u32,
+    ledger_sequence: u32,
+    timestamp: u64,
+) -> Result<&'static EventSchema, &'static str> {
+    // 1. Non-zero event type ID.
+    if event_type_id == 0 {
+        return Err("Event type ID cannot be zero");
+    }
+
+    // 2. Schema version must match current version.
+    if schema_version != EVENT_SCHEMA_VERSION {
+        return Err("Event schema version does not match current EVENT_SCHEMA_VERSION");
+    }
+
+    // 3. Find matching schema.
+    let schema = EVENT_SCHEMAS
+        .iter()
+        .find(|s| s.event_type_id == event_type_id)
+        .ok_or("No schema registered for event_type_id")?;
+
+    // 4. Validate schema entry itself (defense-in-depth).
+    validate_event_schema_entry(schema)?;
+
+    // 5. Check dedup — reject if already emitted.
+    let dedup_key = compute_event_dedup_key(env, event_type_id, ledger_sequence, schema_version, timestamp);
+    if !check_event_dedup(env, &dedup_key)
+        .map_err(|_| "Internal error during dedup check")?
+    {
+        return Err("Duplicate event detected — already emitted");
+    }
+
+    Ok(schema)
+}

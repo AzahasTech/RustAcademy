@@ -13,6 +13,8 @@ describe('SearchService', () => {
       null as any,
       null as any,
       { recordActivity: jest.fn() } as unknown as RewardsService,
+      undefined as any,
+      undefined as any,
     );
     searchService = new SearchService(courseService);
   });

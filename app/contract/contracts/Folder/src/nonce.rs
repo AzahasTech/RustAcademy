@@ -73,8 +73,13 @@ pub fn verify_and_consume(
     nonce: u64,
     valid_until: u64,
 ) -> Result<(),  RustAcademyError> {
-    // 1. Expiry check — reject if the window has closed.
-    if env.ledger().timestamp() >= valid_until {
+    // 0. Nonce zero check — zero nonce is invalid/reserved.
+    if nonce == 0 {
+        return Err( RustAcademyError::NonceAlreadyUsed);
+    }
+
+    // 1. Expiry check — reject if valid_until is zero or the window has closed.
+    if valid_until == 0 || env.ledger().timestamp() >= valid_until {
         return Err( RustAcademyError::SignatureExpired);
     }
 

@@ -11,6 +11,12 @@ import type { Profile } from "@/types/profile";
 const FOCUS_RING_CLASS =
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300 focus-visible:ring-offset-2 focus-visible:ring-offset-black";
 
+const ERROR_COPY = {
+  invalidUsername: "Invalid username",
+  notFound: "Username not found or profile is private",
+  fallback: "Failed to load profile",
+} as const;
+
 export default function PublicProfile() {
   const params = useParams();
   const router = useRouter();
@@ -19,6 +25,7 @@ export default function PublicProfile() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [avatarFailed, setAvatarFailed] = useState(false);
 
   const [paymentForm, setPaymentForm] = useState({
     amount: "",
@@ -29,18 +36,22 @@ export default function PublicProfile() {
   useEffect(() => {
     let mounted = true;
 
+    // Reset per-username state so navigating between profiles never shows
+    // stale content (avoids flicker / metadata inconsistency across refreshes).
+    setProfile(null);
+    setAvatarFailed(false);
+    setError(null);
+    setLoading(true);
+
     async function fetchProfile() {
       if (!username) {
-        setError("Invalid username");
+        setError(ERROR_COPY.invalidUsername);
         setLoading(false);
         return;
       }
 
       try {
-        setLoading(true);
-        setError(null);
         const data = await getProfile(username);
-        
         if (mounted) {
           setProfile(data);
         }
@@ -48,11 +59,11 @@ export default function PublicProfile() {
         if (!mounted) return;
 
         if (err instanceof ProfileNotFoundError) {
-          setError("Username not found or profile is private");
+          setError(ERROR_COPY.notFound);
         } else if (err instanceof Error) {
           setError(err.message);
         } else {
-          setError("Failed to load profile");
+          setError(ERROR_COPY.fallback);
         }
         setProfile(null);
       } finally {
@@ -71,7 +82,11 @@ export default function PublicProfile() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center text-white">
+      <div
+        className="min-h-screen flex items-center justify-center text-white"
+        role="status"
+        aria-live="polite"
+      >
         <div className="text-center">
           <div className="w-12 h-12 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
           <p className="text-neutral-400">Loading profile...</p>
@@ -82,11 +97,14 @@ export default function PublicProfile() {
 
   if (error || !profile) {
     return (
-      <div className="min-h-screen flex items-center justify-center text-white px-4">
+      <div
+        className="min-h-screen flex items-center justify-center text-white px-4"
+        role="alert"
+      >
         <div className="text-center max-w-md">
           <h1 className="text-6xl font-black mb-4">404</h1>
           <p className="text-xl text-neutral-300 mb-6">
-            {error || "Username not found"}
+            {error || ERROR_COPY.notFound}
           </p>
           <button
             onClick={() => router.push("/")}
@@ -100,6 +118,7 @@ export default function PublicProfile() {
   }
 
   const primaryColor = profile.primaryColor || "#6366f1";
+  const showAvatar = Boolean(profile.avatarUrl) && !avatarFailed;
 
   return (
     <div className="relative min-h-screen text-white">
@@ -130,7 +149,7 @@ export default function PublicProfile() {
         <div className="text-center mb-12">
           {/* Avatar */}
           <div className="flex justify-center mb-6">
-            {profile.avatarUrl ? (
+            {showAvatar ? (
               <Image
                 src={profile.avatarUrl}
                 alt={profile.username}
@@ -138,6 +157,7 @@ export default function PublicProfile() {
                 height={128}
                 className="w-32 h-32 rounded-full border-4 object-cover"
                 style={{ borderColor: primaryColor }}
+                onError={() => setAvatarFailed(true)}
               />
             ) : (
               <div
@@ -202,9 +222,9 @@ export default function PublicProfile() {
 
         {/* Payment Form */}
         <div className="rounded-3xl bg-black/40 border border-white/5 backdrop-blur-2xl p-8 mb-8">
-          <h2 className="text-2xl font-black mb-6">Send Payment</h2>
+          <h2 id="payment-form-title" className="text-2xl font-black mb-6">Send Payment</h2>
 
-          <form className="space-y-4" onSubmit={(e) => e.preventDefault()}>
+          <form className="space-y-4" aria-labelledby="payment-form-title" onSubmit={(e) => e.preventDefault()}>
             <div>
               <label
                 htmlFor="payment-amount"
@@ -222,6 +242,7 @@ export default function PublicProfile() {
                 className={`w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white text-lg ${FOCUS_RING_CLASS}`}
                 placeholder="0.00"
                 step="0.01"
+                min="0"
               />
             </div>
 

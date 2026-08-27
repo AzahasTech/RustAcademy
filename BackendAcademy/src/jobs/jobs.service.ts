@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, OnApplicationShutdown } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { isFeatureEnabled } from '../config/env.schema';
 
@@ -53,9 +53,10 @@ export interface CompetitionResetLogEntry {
 }
 
 @Injectable()
-export class JobsService implements OnModuleInit {
+export class JobsService implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(JobsService.name);
   private readonly schedules = new Map<string, CronSchedule>();
+  private heartbeatInterval: NodeJS.Timeout | null = null;
 
   /** #394: History of replay job executions */
   private readonly replayJobHistory: ReplayJobResult[] = [];
@@ -65,6 +66,12 @@ export class JobsService implements OnModuleInit {
   onModuleInit(): void {
     this.loadSchedules();
     this.validateAll();
+
+    // #376: Start periodic heartbeat for readiness probes
+    this.lastHeartbeat = new Date();
+    this.heartbeatInterval = setInterval(() => {
+      this.heartbeat();
+    }, 30_000); // heartbeat every 30 seconds
 
     // #394: Log replay availability
     const replayEnabled = isFeatureEnabled(
@@ -484,5 +491,54 @@ export class JobsService implements OnModuleInit {
    */
   cancelWebhookRetry(webhookId: string): boolean {
     return this.pendingWebhookRetries.delete(webhookId);
+  }
+
+  onApplicationShutdown(signal?: string) {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+    this.workerReady = false;
+    this.logger.log(`JobsService shut down gracefully (signal: ${signal}).`);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Readiness probes — Issue #376
+  // ---------------------------------------------------------------------------
+
+  private workerReady = true;
+  private lastHeartbeat: Date = new Date();
+
+  /**
+   * Returns true when background workers are initialized and accepting jobs.
+   * Used by the readiness probe to determine if this instance is traffic-ready.
+   */
+  isReady(): boolean {
+    // Workers are considered ready if initialized and heartbeat is fresh
+    // (within the last 60 seconds).
+    const heartbeatFresh =
+      Date.now() - this.lastHeartbeat.getTime() < 60_000;
+    return this.workerReady && heartbeatFresh;
+  }
+
+  /**
+   * Returns the current depth of pending/scheduled job queues.
+   */
+  getQueueDepth(): number {
+    return this.pendingWebhookRetries.size;
+  }
+
+  /**
+   * Returns the timestamp of the last worker heartbeat.
+   */
+  getLastHeartbeat(): Date {
+    return this.lastHeartbeat;
+  }
+
+  /**
+   * Call this periodically from the worker loop to signal aliveness.
+   */
+  heartbeat(): void {
+    this.lastHeartbeat = new Date();
   }
 }

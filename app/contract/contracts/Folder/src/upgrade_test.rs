@@ -669,6 +669,9 @@ fn seed_admin_role<'a>(
 ) ->  RustAcademyContractClient<'a> {
     let client = upgrade_to_current(env, contract_id);
     client.migrate(admin);
+    // Grant Governance role so governance-gated operations (upgrades, emergency)
+    // succeed in tests that exercise the full lifecycle.
+    client.grant_role(admin, admin, &crate::types::Role::Governance);
     client
 }
 
@@ -934,6 +937,270 @@ fn upgrade_safety_gate_blocks_upgrade_with_wrong_hash() {
 
     // Correct hash succeeds.
     client.upgrade(&gs.admin, &correct_hash);
+}
+
+// ============================================================================
+// Issue #554: Re-entry Protection Tests
+// ============================================================================
+
+#[test]
+fn upgrade_safety_gate_blocks_reentry_in_start_upgrade() {
+    let (env, gs) = build_golden_state();
+    let client = seed_admin_role(&env, &gs.contract_id, &gs.admin);
+    let dummy_hash = BytesN::from_array(&env, &[0; 32]);
+
+    client.set_upgrade_window(&gs.admin, &1u64, &0u64);
+
+    // Set reentrancy guard to simulate a re-entry attempt
+    env.as_contract(&gs.contract_id, || {
+        let key = crate::storage::DataKey::ReentrancyGuard;
+        env.storage().persistent().set(&key, &true);
+    });
+
+    // Attempt start_upgrade with reentrancy guard set → should fail
+    let result = client.try_start_upgrade(&gs.admin, &CURRENT_CONTRACT_VERSION, &dummy_hash);
+    assert!(
+        result.is_err(),
+        "start_upgrade must fail when reentrancy guard is set"
+    );
+}
+
+#[test]
+fn upgrade_safety_gate_blocks_reentry_in_upgrade() {
+    let (env, gs) = build_golden_state();
+    let client = seed_admin_role(&env, &gs.contract_id, &gs.admin);
+    let dummy_hash = BytesN::from_array(&env, &[0; 32]);
+
+    client.set_upgrade_window(&gs.admin, &1u64, &0u64);
+    client.start_upgrade(&gs.admin, &CURRENT_CONTRACT_VERSION, &dummy_hash);
+
+    // Set reentrancy guard to simulate a re-entry attempt
+    env.as_contract(&gs.contract_id, || {
+        let key = crate::storage::DataKey::ReentrancyGuard;
+        env.storage().persistent().set(&key, &true);
+    });
+
+    // Attempt upgrade() with reentrancy guard set → should fail
+    let result = client.try_upgrade(&gs.admin, &dummy_hash);
+    assert!(
+        result.is_err(),
+        "upgrade() must fail when reentrancy guard is set"
+    );
+}
+
+#[test]
+fn upgrade_safety_gate_blocks_reentry_in_complete_upgrade() {
+    let (env, gs) = build_golden_state();
+    let client = seed_admin_role(&env, &gs.contract_id, &gs.admin);
+    let dummy_hash = BytesN::from_array(&env, &[0; 32]);
+
+    client.set_upgrade_window(&gs.admin, &1u64, &0u64);
+    client.start_upgrade(&gs.admin, &CURRENT_CONTRACT_VERSION, &dummy_hash);
+    client.upgrade(&gs.admin, &dummy_hash);
+
+    // Set reentrancy guard to simulate a re-entry attempt
+    env.as_contract(&gs.contract_id, || {
+        let key = crate::storage::DataKey::ReentrancyGuard;
+        env.storage().persistent().set(&key, &true);
+    });
+
+    // Attempt complete_upgrade() with reentrancy guard set → should fail
+    let result = client.try_complete_upgrade(&gs.admin, &CURRENT_CONTRACT_VERSION);
+    assert!(
+        result.is_err(),
+        "complete_upgrade() must fail when reentrancy guard is set"
+    );
+}
+
+#[test]
+fn upgrade_safety_gate_blocks_reentry_in_cancel_upgrade() {
+    let (env, gs) = build_golden_state();
+    let client = seed_admin_role(&env, &gs.contract_id, &gs.admin);
+    let dummy_hash = BytesN::from_array(&env, &[0; 32]);
+
+    client.set_upgrade_window(&gs.admin, &1u64, &0u64);
+    client.start_upgrade(&gs.admin, &CURRENT_CONTRACT_VERSION, &dummy_hash);
+
+    // Set reentrancy guard to simulate a re-entry attempt
+    env.as_contract(&gs.contract_id, || {
+        let key = crate::storage::DataKey::ReentrancyGuard;
+        env.storage().persistent().set(&key, &true);
+    });
+
+    // Attempt cancel_upgrade() with reentrancy guard set → should fail
+    let result = client.try_cancel_upgrade(&gs.admin);
+    assert!(
+        result.is_err(),
+        "cancel_upgrade() must fail when reentrancy guard is set"
+    );
+}
+
+// ============================================================================
+// Issue #554: Invariant Drift Detection Tests
+// ============================================================================
+
+#[test]
+fn upgrade_safety_gate_detects_fee_drift() {
+    let (env, gs) = build_golden_state();
+    let client = seed_admin_role(&env, &gs.contract_id, &gs.admin);
+    let dummy_hash = BytesN::from_array(&env, &[0; 32]);
+
+    client.set_upgrade_window(&gs.admin, &1u64, &0u64);
+    client.start_upgrade(&gs.admin, &CURRENT_CONTRACT_VERSION, &dummy_hash);
+    client.upgrade(&gs.admin, &dummy_hash);
+
+    // Simulate fee drift by modifying fee config during migration
+    env.as_contract(&gs.contract_id, || {
+        let mut fee_cfg = crate::storage::get_fee_config(&env);
+        fee_cfg.fee_bps = 99999; // Invalid fee
+        // Direct storage modification to simulate drift
+        let key = crate::storage::DataKey::FeeConfig;
+        env.storage().persistent().set(&key, &fee_cfg);
+    });
+
+    // complete_upgrade should fail due to invariant drift
+    let result = client.try_complete_upgrade(&gs.admin, &CURRENT_CONTRACT_VERSION);
+    assert!(
+        result.is_err(),
+        "complete_upgrade must fail when invariant drift is detected"
+    );
+}
+
+#[test]
+fn upgrade_safety_gate_detects_version_regression() {
+    let (env, gs) = build_golden_state();
+    let client = seed_admin_role(&env, &gs.contract_id, &gs.admin);
+    let dummy_hash = BytesN::from_array(&env, &[0; 32]);
+
+    client.set_upgrade_window(&gs.admin, &1u64, &0u64);
+    client.start_upgrade(&gs.admin, &CURRENT_CONTRACT_VERSION, &dummy_hash);
+    client.upgrade(&gs.admin, &dummy_hash);
+
+    // Simulate version regression by setting version lower than snapshot
+    env.as_contract(&gs.contract_id, || {
+        let key = crate::storage::DataKey::ContractVersion;
+        env.storage().persistent().set(&key, &0u32); // Lower than expected
+    });
+
+    // complete_upgrade should fail due to version drift
+    let result = client.try_complete_upgrade(&gs.admin, &CURRENT_CONTRACT_VERSION);
+    assert!(
+        result.is_err(),
+        "complete_upgrade must fail when version regression is detected"
+    );
+}
+
+#[test]
+fn upgrade_safety_gate_detects_counter_drift() {
+    let (env, gs) = build_golden_state();
+    let client = seed_admin_role(&env, &gs.contract_id, &gs.admin);
+    let dummy_hash = BytesN::from_array(&env, &[0; 32]);
+
+    client.set_upgrade_window(&gs.admin, &1u64, &0u64);
+    client.start_upgrade(&gs.admin, &CURRENT_CONTRACT_VERSION, &dummy_hash);
+    client.upgrade(&gs.admin, &dummy_hash);
+
+    // Increment counter before snapshot (this is allowed - counter can increase)
+    env.as_contract(&gs.contract_id, || {
+        let key = crate::storage::DataKey::EscrowCounter;
+        let count: u64 = env.storage().persistent().get(&key).unwrap_or(0);
+        env.storage().persistent().set(&key, &(count + 1));
+    });
+
+    // complete_upgrade should succeed since counter increased (not decreased)
+    client.complete_upgrade(&gs.admin, &CURRENT_CONTRACT_VERSION);
+}
+
+// ============================================================================
+// Issue #554: Repeated-Init Misuse Prevention Tests
+// ============================================================================
+
+#[test]
+fn upgrade_safety_gate_blocks_start_on_uninitialized_contract() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(RustAcademyContract, ());
+    let client = RustAcademyContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let dummy_hash = BytesN::from_array(&env, &[0; 32]);
+
+    // Do NOT initialize the contract
+
+    // Set upgrade window (should fail due to uninitialized state)
+    let result = client.try_set_upgrade_window(&admin, &1u64, &0u64);
+    assert!(
+        result.is_err(),
+        "set_upgrade_window must fail on uninitialized contract"
+    );
+
+    // start_upgrade should also fail
+    let result = client.try_start_upgrade(&admin, &CURRENT_CONTRACT_VERSION, &dummy_hash);
+    assert!(
+        result.is_err(),
+        "start_upgrade must fail on uninitialized contract"
+    );
+}
+
+#[test]
+fn upgrade_safety_gate_allows_upgrade_after_proper_initialization() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(RustAcademyContract, ());
+    let client = RustAcademyContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let dummy_hash = BytesN::from_array(&env, &[0; 32]);
+
+    // Properly initialize the contract
+    client.initialize(&admin);
+    client.grant_role(&admin, &admin, &crate::types::Role::Governance);
+
+    // Advance time so the upgrade window is active
+    env.ledger().with_mut(|li| {
+        li.timestamp = 200;
+    });
+
+    // Now upgrade operations should work
+    client.set_upgrade_window(&admin, &1u64, &0u64);
+    client.start_upgrade(&admin, &CURRENT_CONTRACT_VERSION, &dummy_hash);
+    client.upgrade(&admin, &dummy_hash);
+    client.complete_upgrade(&admin, &CURRENT_CONTRACT_VERSION);
+}
+
+// ============================================================================
+// Issue #554: Strengthened Migration Window Validation Tests
+// ============================================================================
+
+#[test]
+fn upgrade_safety_gate_blocks_upgrade_when_window_expires_during_process() {
+    let (env, gs) = build_golden_state();
+    let client = seed_admin_role(&env, &gs.contract_id, &gs.admin);
+    let dummy_hash = BytesN::from_array(&env, &[0; 32]);
+
+    let now = env.ledger().timestamp();
+    // Set a narrow window: [now+100, now+200]
+    client.set_upgrade_window(&gs.admin, &(now + 100), &(now + 200));
+
+    // Advance time to start of window
+    env.ledger().with_mut(|li| {
+        li.timestamp = now + 150;
+    });
+
+    client.start_upgrade(&gs.admin, &CURRENT_CONTRACT_VERSION, &dummy_hash);
+    client.upgrade(&gs.admin, &dummy_hash);
+
+    // Advance time past window end
+    env.ledger().with_mut(|li| {
+        li.timestamp = now + 250;
+    });
+
+    // complete_upgrade should fail since window is no longer active
+    let result = client.try_complete_upgrade(&gs.admin, &CURRENT_CONTRACT_VERSION);
+    assert!(
+        result.is_err(),
+        "complete_upgrade must fail when window has expired"
+    );
 }
 
 // ============================================================================

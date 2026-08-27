@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, OnApplicationShutdown } from '@nestjs/common';
 import {
   TransactionManagerService,
   TransactionSnapshot,
@@ -70,7 +70,7 @@ export interface PaymentTransitionResult {
 }
 
 @Injectable()
-export class DatabaseService implements OnModuleInit {
+export class DatabaseService implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(DatabaseService.name);
   private coupons: Map<string, CouponRecord> = new Map();
   private redemptions: RedemptionRecord[] = [];
@@ -148,6 +148,20 @@ export class DatabaseService implements OnModuleInit {
       },
     ];
     sample.forEach((c) => this.coupons.set(c.id, c));
+  }
+
+  // ---------------------------------------------------------------------
+  // Health check — Issue #375
+  // ---------------------------------------------------------------------
+
+  /**
+   * Returns true when the database (in-memory store) is operational.
+   */
+  async isHealthy(): Promise<boolean> {
+    // The in-memory store is always healthy as long as the process runs.
+    // In production, this would verify actual DB connectivity (e.g.,
+    // SELECT 1 or a connection pool ping).
+    return true;
   }
 
   async createCoupon(coupon: CouponRecord): Promise<CouponRecord> {
@@ -402,5 +416,11 @@ export class DatabaseService implements OnModuleInit {
     }
 
     return { success: true, transitioned: true, payment };
+  }
+
+  onApplicationShutdown(signal?: string) {
+    this.coupons.clear();
+    this.redemptions = [];
+    this.logger.log(`DatabaseService shut down gracefully (signal: ${signal}).`);
   }
 }
