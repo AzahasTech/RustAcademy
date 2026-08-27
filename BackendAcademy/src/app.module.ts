@@ -1,6 +1,6 @@
-import { Module, MiddlewareConsumer, NestModule } from '@nestjs/common';
-import { APP_GUARD } from '@nestjs/core';
-import { ThrottlerGuard, ThrottleModule } from '@nestjs/throttler';
+import { Module, MiddlewareConsumer, NestModule, ValidationPipe } from '@nestjs/common';
+import { APP_GUARD, APP_FILTER, APP_INTERCEPTOR, APP_PIPE } from '@nestjs/core';
+import { ThrottleGuard, ThrottleModule } from '@nestjs/throttler';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AdminModule } from './admin/admin.module';
@@ -26,7 +26,9 @@ import { PaymentsModule } from './payments/payments.module';
 import { I18nModule } from './i18n/i18n.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { HealthModule } from './health/health.module';
-import { CorrelationIdMiddleware } from './common/correlation-id.middleware';
+import { CorrelationIDMiddleware } from './common/correlation-id.middleware';
+import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import { TransformInterceptor } from './common/interceptors/transform.interceptor';
 import { AiModule } from './ai/ai.module';
 import { JobsModule } from './jobs/jobs.module';
 import { LeaderboardModule } from './leaderboard/leaderboard.module';
@@ -42,6 +44,7 @@ import { ProgressModule } from './courses/progress/progress.module';
 import { RedisModule } from './redis/redis.module';
 import { ReportsModule } from './reports/reports.module';
 import { SessionsModule } from './sessions/sessions.module';
+import { AuditModule } from './audit/audit.module';
 
 @Module({
   imports: [
@@ -55,6 +58,9 @@ import { SessionsModule } from './sessions/sessions.module';
     BadgesModule,
     ChatModule,
     UsersModule,
+    ContractsModule,
+    RedisModule,
+    AuditModule,
     UserProfileModule,
     TutorProfileModule,
     SubmissionModule,
@@ -88,11 +94,14 @@ import { SessionsModule } from './sessions/sessions.module';
   controllers: [AppController],
   providers: [
     AppService,
-    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_GUARD, useClass: ThrottleGuard },
+    { provide: APP_FILTER, useClass: AllExceptionsFilter },
+    { provide: APP_INTERCEPTOR, useClass: TransformInterceptor },
+    { provide: APP_PIPE, useValue: new ValidationPipe({ transform: true }) },
   ],
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
-    consumer.apply(CorrelationIdMiddleware).forRoutes('*');
+    consumer.apply(CorrelationIDMiddleware).forRoutes('*');
   }
 }

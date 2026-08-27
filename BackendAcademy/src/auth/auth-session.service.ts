@@ -1,10 +1,11 @@
-import {
+﻿import {
   Injectable,
   UnauthorizedException,
   Logger,
   Inject,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { AuditLogService } from '../audit/audit.service';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID, createHash } from 'crypto';
 import { UserRole } from './enums/user-role.enum';
@@ -174,12 +175,13 @@ export class AuthSessionService {
     };
 
     await this.setSession(session);
-    await this.rds.sate(`trustedDevices:${userId}`, deviceHash ? [deviceHash] : []);
+    if (deviceHash) await this.rds.sadd(`trustedDevices:${userId}`, deviceHash);
 
     if (deviceHash && !(await this.isTrustedDevice(userId, deviceHash))) {
-      this.logger.warn(@new device login for user ${userId}`);
+      this.logger.warn(`New device login for user ${userId}`);
     }
 
+    this.auditService.create({ action: 'login', actor: userId, outcome: 'SUCCESS', session: sessionId, requestContext: { deviceHash } });
     return this.buildTokensResponse(accessToken, refreshToken);
   }
 
@@ -237,6 +239,7 @@ export class AuthSessionService {
     session.revoked = true;
     await this.setSession(session);
 
+    this.auditService.create({ action: 'refresh', actor: session.userId, outcome: 'SUCCESS', session: session.sessionId });
     return await this.createSession(session.userId, session.role);
   }
 
@@ -250,6 +253,7 @@ export class AuthSessionService {
       session.revoked = true;
       await this.setSession(session);
       this.logger.log(`Session ${sessionId} revoked for user ${session.userId}`);
+      this.auditService.create({ action: 'logout', actor: session.userId, outcome: 'SUCCESS', session: sessionId });
     }
   }
 
@@ -268,7 +272,8 @@ export class AuthSessionService {
         count++;
       }
     }
-    this.logger.log(All ${count} sessions revoked for user ${userId}`);
+    this.logger.log(`All ${count} sessions revoked for user ${userId}`);
+    this.auditService.create({ action: 'logout_all', actor: userId, outcome: 'SUCCESS', requestContext: { count } });
   }
 
   /**
@@ -302,11 +307,13 @@ export class AuthSessionService {
   }
 
   async addTrustedDevice(userId: string, deviceHash: string): Promise<void> {
-    await this.rds.sate(`trustedDevices:${userId}`, deviceHash);
+    await this.rds.sadd(`trustedDevices:${userId}`, deviceHash);
+    this.auditService.create({ action: 'add_trusted_device', actor: userId, outcome: 'SUCCESS', requestContext: { deviceHash } });
   }
 
   async removeTrustedDevice(userId: string, deviceHash: string): Promise<void> {
     await this.rds.srem(`trustedDevices:${userId}`, deviceHash);
+    this.auditService.create({ action: 'remove_trusted_device', actor: userId, outcome: 'SUCCESS', requestContext: { deviceHash } });
   }
 
   async getTrustedDevices(userId: string): Promise<string[]> {
@@ -323,11 +330,11 @@ export class AuthSessionService {
   // ---------------------------------------------------------------------------
 
   private sessionKey(sessionId: string): string {
-    return session:${sessionId};
+    return `session:${sessionId}`;
   }
 
   private userSessionsKey(userId: string): string {
-    return userSessions:${userId};
+    return `userSessions:${userId}`;
   }
 
   private async getSession(sessionId: string): Promise<Session | null> {
@@ -343,8 +350,8 @@ export class AuthSessionService {
     await this.rds.sadd(userKey, session.sessionId);
   }
 
-  private refreshSecret): string {
-    return this.configService.get<string>('JMT_REFRESH_SECRET', this.configService.get<(string>('JMT_SECRET', 'change-me'));
+  private get refreshSecret(): string {
+    return this.configService.get<string>('JMT_REFRESH_SECRET', this.configService.get<string>('JMT_SECRET', 'change-me'));
   }
 
   private async signTokenPair(
@@ -379,3 +386,9 @@ export class AuthSessionService {
     };
   }
 }
+
+
+
+
+
+

@@ -1,19 +1,15 @@
-import {
-  Injectable,
-  UnauthorizedException,
-  Logger,
-} from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
-import { ConfigService } from '@nestjs/config';
-import { randomUUID, createHash } from 'crypto';
-import { UserRole } from './enums/user-role.enum';
-import { JwtPayload } from './interfaces/jwt-payload.interface';
+import { Injectable, UnauthorizedException, Logger } from "@nestjs/common";
+import { JwtService } from "@nestjs/jwt";
+import { ConfigService } from "@nestjs/config";
+import { randomUUID, createHash } from "crypto";
+import { UserRole } from "./enums/user-role.enum";
+import { JwtPayload } from "./interfaces/jwt-payload.interface";
 import {
   AuthTokensResponse,
   RefreshTokenPayload,
   Session,
-} from './interfaces/session.interface';
-import { RedisService } from '../redis/redis.service';
+} from "./interfaces/session.interface";
+import { RedisService } from "../redis/redis.service";
 
 export interface SessionPolicy {
   accessTokenTtl: number;
@@ -23,6 +19,10 @@ export interface SessionPolicy {
   singleSessionMode: boolean;
   requireDeviceFingerprint: boolean;
   idleSessionTimeout: number;
+}
+
+export interface LogoutResult {
+  success: true;
 }
 
 const DEFAULT_SESSION_POLICY = {
@@ -46,13 +46,34 @@ export class AuthSessionService {
     private readonly redisService: RedisService,
   ) {
     this.sessionPolicy = {
-      accessTokenTtl: this.configService.get<number>('SESSION_ACCESS_TOKEN_TTL', DEFAULT_SESSION_POLICY.accessTokenTtl),
-      refreshTokenTtl: this.configService.get<number>('SESSION_REFRESH_TOKEN_TTL', DEFAULT_SESSION_POLICY.refreshTokenTtl),
-      deliveryGracePeriod: this.configService.get<number>('SESSION_DELIVERY_GRACE_PERIOD', DEFAULT_SESSION_POLICY.deliveryGracePeriod),
-      maxConcurrentSessions: this.configService.get<number>('SESSION_MAX_CONCURRENT', DEFAULT_SESSION_POLICY.maxConcurrentSessions),
-      singleSessionMode: this.configService.get<boolean>('SESSION_SINGLE_MODE', DEFAULT_SESSION_POLICY.singleSessionMode),
-      requireDeviceFingerprint: this.configService.get<boolean>('SESSION_REQUIRE_DEVICE', DEFAULT_SESSION_POLICY.requireDeviceFingerprint),
-      idleSessionTimeout: this.configService.get<number>('SESSION_IDLE_TIMEOUT', DEFAULT_SESSION_POLICY.idleSessionTimeout),
+      accessTokenTtl: this.configService.get<number>(
+        "SESSION_ACCESS_TOKEN_TTL",
+        DEFAULT_SESSION_POLICY.accessTokenTtl,
+      ),
+      refreshTokenTtl: this.configService.get<number>(
+        "SESSION_REFRESH_TOKEN_TTL",
+        DEFAULT_SESSION_POLICY.refreshTokenTtl,
+      ),
+      deliveryGracePeriod: this.configService.get<number>(
+        "SESSION_DELIVERY_GRACE_PERIOD",
+        DEFAULT_SESSION_POLICY.deliveryGracePeriod,
+      ),
+      maxConcurrentSessions: this.configService.get<number>(
+        "SESSION_MAX_CONCURRENT",
+        DEFAULT_SESSION_POLICY.maxConcurrentSessions,
+      ),
+      singleSessionMode: this.configService.get<boolean>(
+        "SESSION_SINGLE_MODE",
+        DEFAULT_SESSION_POLICY.singleSessionMode,
+      ),
+      requireDeviceFingerprint: this.configService.get<boolean>(
+        "SESSION_REQUIRE_DEVICE",
+        DEFAULT_SESSION_POLICY.requireDeviceFingerprint,
+      ),
+      idleSessionTimeout: this.configService.get<number>(
+        "SESSION_IDLE_TIMEOUT",
+        DEFAULT_SESSION_POLICY.idleSessionTimeout,
+      ),
     };
   }
 
@@ -67,9 +88,15 @@ export class AuthSessionService {
   ): Promise<AuthTokensResponse> {
     const sessionId = randomUUID();
     const now = new Date();
-    const expiresAt = new Date(now.getTime() + this.sessionPolicy.refreshTokenTtl * 1000);
+    const expiresAt = new Date(
+      now.getTime() + this.sessionPolicy.refreshTokenTtl * 1000,
+    );
 
-    const { accessToken, refreshToken } = await this.signTokenPair(userId, role, sessionId);
+    const { accessToken, refreshToken } = await this.signTokenPair(
+      userId,
+      role,
+      sessionId,
+    );
 
     const deviceHash = deviceFingerprint
       ? this.hashDevice(deviceFingerprint)
@@ -82,7 +109,8 @@ export class AuthSessionService {
     const activeSessions = await this.getActiveSessions(userId);
     if (activeSessions.length >= this.sessionPolicy.maxConcurrentSessions) {
       const oldest = activeSessions.sort(
-        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+        (a, b) =>
+          new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
       )[0];
       if (oldest) {
         await this.revokeSession(oldest.sessionId);
@@ -129,16 +157,16 @@ export class AuthSessionService {
       );
     } catch {
       throw new UnauthorizedException({
-        error: 'INVALID_REFRESH_TOKEN',
-        message: 'Refresh token is invalid or has expired',
+        error: "INVALID_REFRESH_TOKEN",
+        message: "Refresh token is invalid or has expired",
       });
     }
 
     const session = await this.getSession(payload.sessionId);
     if (!session || session.revoked) {
       throw new UnauthorizedException({
-        error: 'SESSION_NOT_FOUND',
-        message: 'Session has been revoked or does not exist',
+        error: "SESSION_NOT_FOUND",
+        message: "Session has been revoked or does not exist",
       });
     }
 
@@ -146,17 +174,23 @@ export class AuthSessionService {
       session.revoked = true;
       await this.saveSession(session);
       throw new UnauthorizedException({
-        error: 'TOKEN_REUSE_DETECTED',
-        message: 'Refresh token has already been used; session revoked',
+        error: "TOKEN_REUSE_DETECTED",
+        message: "Refresh token has already been used; session revoked",
       });
     }
 
-    if (new Date() > new Date(session.expiresAt.getTime() + this.sessionPolicy.deliveryGracePeriod * 1000)) {
+    if (
+      new Date() >
+      new Date(
+        session.expiresAt.getTime() +
+          this.sessionPolicy.deliveryGracePeriod * 1000,
+      )
+    ) {
       session.revoked = true;
       await this.saveSession(session);
       throw new UnauthorizedException({
-        error: 'SESSION_EXPIRED',
-        message: 'Session has expired; please log in again',
+        error: "SESSION_EXPIRED",
+        message: "Session has expired; please log in again",
       });
     }
 
@@ -166,13 +200,31 @@ export class AuthSessionService {
     return this.createSession(session.userId, session.role);
   }
 
-  async revokeSession(sessionId: string): Promise<void> {
-    const session = await this.getSession(sessionId);
-    if (session) {
-      session.revoked = true;
-      await this.saveSession(session);
-      this.logger.log(`Session ${sessionId} revoked for user ${session.userId}`);
+  /**
+   * Idempotent logout entry point for controllers.
+   *
+   * Always resolves to { success: true } and never throws — a retried,
+   * duplicated, or out-of-order logout request (missing token, unknown
+   * session, already-revoked session, malformed token) is treated as
+   * "the session is already logged out", which is the desired end state.
+   * This intentionally never re-creates or re-persists a session, so a
+   * repeated call cannot resurrect state that was already cleaned up.
+   */
+  async logout(rawRefreshToken?: string): Promise<LogoutResult> {
+    const sessionId = this.extractSessionId(rawRefreshToken);
+    if (sessionId) {
+      await this.revokeSessionIdempotent(sessionId);
     }
+    return { success: true };
+  }
+
+  /**
+   * Revokes a session by id. Safe to call multiple times: a missing
+   * session or an already-revoked session are both treated as a
+   * successful no-op rather than an error.
+   */
+  async revokeSession(sessionId: string): Promise<void> {
+    await this.revokeSessionIdempotent(sessionId);
   }
 
   async revokeAllUserSessions(userId: string): Promise<void> {
@@ -180,7 +232,7 @@ export class AuthSessionService {
     let count = 0;
     for (const sessionId of sessionIds) {
       const session = await this.getSession(sessionId);
-      if (session) {
+      if (session && !session.revoked) {
         session.revoked = true;
         await this.saveSession(session);
         count++;
@@ -189,13 +241,20 @@ export class AuthSessionService {
     this.logger.log(`All ${count} sessions revoked for user ${userId}`);
   }
 
-  async getActiveSessions(userId: string): Promise<Omit<Session, 'refreshToken'>[]> {
+  async getActiveSessions(
+    userId: string,
+  ): Promise<Omit<Session, "refreshToken">[]> {
     const sessionIds = await this.getUserSessionIds(userId);
     const now = new Date();
-    const result: Omit<Session, 'refreshToken'>[] = [];
+    const result: Omit<Session, "refreshToken">[] = [];
     for (const sessionId of sessionIds) {
       const session = await this.getSession(sessionId);
-      if (session && session.userId === userId && !session.revoked && session.expiresAt > now) {
+      if (
+        session &&
+        session.userId === userId &&
+        !session.revoked &&
+        session.expiresAt > now
+      ) {
         const { refreshToken: _rt, ...rest } = session;
         result.push(rest);
       }
@@ -204,7 +263,7 @@ export class AuthSessionService {
   }
 
   hashDevice(fingerprint: string): string {
-    return createHash('sha256').update(fingerprint).digest('hex');
+    return createHash("sha256").update(fingerprint).digest("hex");
   }
 
   async isTrustedDevice(userId: string, deviceHash: string): Promise<boolean> {
@@ -234,13 +293,68 @@ export class AuthSessionService {
     return Array.isArray(devices) ? (devices as string[]) : [];
   }
 
-  async checkDeviceTrust(userId: string, deviceFingerprint: string): Promise<{ trusted: boolean; deviceHash: string }> {
+  async checkDeviceTrust(
+    userId: string,
+    deviceFingerprint: string,
+  ): Promise<{ trusted: boolean; deviceHash: string }> {
     const deviceHash = this.hashDevice(deviceFingerprint);
-    return { trusted: await this.isTrustedDevice(userId, deviceHash), deviceHash };
+    return {
+      trusted: await this.isTrustedDevice(userId, deviceHash),
+      deviceHash,
+    };
   }
 
   private get refreshSecret(): string {
-    return this.configService.get<string>('JWT_REFRESH_SECRET', 'refresh_secret');
+    return this.configService.get<string>(
+      "JWT_REFRESH_SECRET",
+      "refresh_secret",
+    );
+  }
+
+  /**
+   * Pulls a sessionId out of a raw refresh token without throwing.
+   * Verification failures, expiry, and malformed tokens all resolve to
+   * `undefined` rather than an error — logout should never fail just
+   * because the token being logged out with is already dead.
+   */
+  private extractSessionId(rawRefreshToken?: string): string | undefined {
+    if (!rawRefreshToken) {
+      return undefined;
+    }
+    try {
+      const decoded = this.jwtService.decode(
+        rawRefreshToken,
+      ) as RefreshTokenPayload | null;
+      return decoded?.sessionId;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Single source of truth for "revoke this session id, safely, exactly
+   * once". Fetch-missing and already-revoked are both no-ops so retries
+   * are indistinguishable from the first successful call, and neither
+   * path re-writes a session that no longer needs to exist in Redis.
+   */
+  private async revokeSessionIdempotent(sessionId: string): Promise<void> {
+    const session = await this.getSession(sessionId);
+
+    if (!session) {
+      this.logger.debug(
+        `Logout no-op: session ${sessionId} not found (already revoked/expired/evicted)`,
+      );
+      return;
+    }
+
+    if (session.revoked) {
+      this.logger.debug(`Logout no-op: session ${sessionId} already revoked`);
+      return;
+    }
+
+    session.revoked = true;
+    await this.saveSession(session);
+    this.logger.log(`Session ${sessionId} revoked for user ${session.userId}`);
   }
 
   private async signTokenPair(
@@ -249,10 +363,14 @@ export class AuthSessionService {
     sessionId: string,
   ): Promise<{ accessToken: string; refreshToken: string }> {
     const accessPayload: JwtPayload = { sub: userId, role };
-    const refreshPayload: RefreshTokenPayload = { sub: userId, role, sessionId };
+    const refreshPayload: RefreshTokenPayload = {
+      sub: userId,
+      role,
+      sessionId,
+    };
 
     const [accessToken, refreshToken] = await Promise.all([
-      this.kwtService.signAsync(accessPayload, {
+      this.jwtService.signAsync(accessPayload, {
         expiresIn: this.sessionPolicy.accessTokenTtl,
       }),
       this.jwtService.signAsync(refreshPayload, {
@@ -271,7 +389,7 @@ export class AuthSessionService {
     return {
       accessToken,
       refreshToken,
-      tokenType: 'Bearer',
+      tokenType: "Bearer",
       expiresIn: this.sessionPolicy.accessTokenTtl,
     };
   }
@@ -284,7 +402,11 @@ export class AuthSessionService {
 
   private async saveSession(session: Session): Promise<void> {
     const ttlMs = Math.max(session.expiresAt.getTime() - Date.now(), 1000);
-    await this.redisService.set(this.sessionKey(session.sessionId), session, ttlMs);
+    await this.redisService.set(
+      this.sessionKey(session.sessionId),
+      session,
+      ttlMs,
+    );
   }
 
   private deserializeSession(data: any): Session {
@@ -300,7 +422,10 @@ export class AuthSessionService {
     return Array.isArray(raw) ? (raw as string[]) : [];
   }
 
-  private async addSessionToUser(userId: string, sessionId: string): Promise<void> {
+  private async addSessionToUser(
+    userId: string,
+    sessionId: string,
+  ): Promise<void> {
     const sessionIds = await this.getUserSessionIds(userId);
     if (!sessionIds.includes(sessionId)) {
       sessionIds.push(sessionId);
