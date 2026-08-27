@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, OnApplicationShutdown } from '@nestjs/common';
 import {
   TransactionManagerService,
   TransactionSnapshot,
@@ -70,7 +70,7 @@ export interface PaymentTransitionResult {
 }
 
 @Injectable()
-export class DatabaseService implements OnModuleInit {
+export class DatabaseService implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(DatabaseService.name);
   private coupons: Map<string, CouponRecord> = new Map();
   private redemptions: RedemptionRecord[] = [];
@@ -416,5 +416,11 @@ export class DatabaseService implements OnModuleInit {
     }
 
     return { success: true, transitioned: true, payment };
+  }
+
+  onApplicationShutdown(signal?: string) {
+    this.coupons.clear();
+    this.redemptions = [];
+    this.logger.log(`DatabaseService shut down gracefully (signal: ${signal}).`);
   }
 }
