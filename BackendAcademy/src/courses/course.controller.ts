@@ -47,9 +47,9 @@ export class CourseController {
     return this.courseService.findByLevel(level);
   }
 
-  @Get(':id')
-  async findById(@Param('id') id: string) {
-    return this.courseService.findById(id);
+  @Get(':slug')
+  async findBySlug(@Param('slug') slug: string) {
+    return this.courseService.findBySlugOrId(slug);
   }
 
   @Put(':id')

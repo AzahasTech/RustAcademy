@@ -66,9 +66,11 @@ export class CourseService {
   ) {}
 
   async create(dto: CreateCourseDto): Promise<CourseEntity> {
+    const slug = await this.createUniqueSlug(dto.title);
     const course = this.courseRepo.create({
       id: crypto.randomUUID(),
       version: CourseService.INITIAL_VERSION,
+      slug,
       ...dto,
     });
     const saved = await this.courseRepo.save(course);
@@ -93,6 +95,11 @@ export class CourseService {
     return this.courseRepo.findOne({ where: { id } });
   }
 
+  async findBySlugOrId(slugOrId: string): Promise<CourseEntity | null> {
+    const bySlug = await this.courseRepo.findOne({ where: { slug: slugOrId } });
+    return bySlug ?? this.findById(slugOrId);
+  }
+
   async update(id: string, dto: UpdateCourseDto): Promise<CourseEntity | null> {
     const course = await this.courseRepo.findOne({ where: { id } });
     if (!course) return null;
@@ -101,6 +108,9 @@ export class CourseService {
     course.version = previousVersion + 1;
     course.updatedAt = new Date();
     Object.assign(course, dto);
+    if (dto.title !== undefined) {
+      course.slug = await this.createUniqueSlug(dto.title, course.id);
+    }
     this.syncCourseTaxonomy(course, dto);
     const saved = await this.courseRepo.save(course);
 
@@ -422,6 +432,29 @@ export class CourseService {
     if (dto.categories?.length && !dto.category) {
       course.category = dto.categories[0];
     }
+  }
+
+  private async createUniqueSlug(title: string, excludeId?: string): Promise<string> {
+    const baseSlug = this.normalizeSlug(title);
+    let slug = baseSlug;
+    let suffix = 2;
+
+    while (true) {
+      const existing = await this.courseRepo.findOne({ where: { slug } });
+      if (!existing || existing.id === excludeId) return slug;
+      slug = `${baseSlug}-${suffix}`;
+      suffix += 1;
+    }
+  }
+
+  private normalizeSlug(title: string): string {
+    const normalized = title
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+    return normalized || 'course';
   }
 
   async getOrFail(id: string): Promise<CourseEntity> {
