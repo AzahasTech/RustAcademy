@@ -199,9 +199,6 @@ export function isFeatureExplicitlyDisabled(value: string | undefined): boolean 
  * Environment variables for notification delivery and preferences (#385).
  */
 export const notificationEnvSchema = Joi.object({
- * Environment variables for notification delivery and preferences.
- */
-export const notificationEnvSchema = Joi.object({
   /** When "true", user notification preferences are enforced before delivery */
   NOTIFICATION_ENFORCE_PREFERENCES: Joi.string()
     .valid('true', 'false')
@@ -217,11 +214,6 @@ export const notificationEnvSchema = Joi.object({
 });
 
 /**
- * Combined validation schema that includes contract and notification
- * environment variables. Used by config.module.ts at startup.
- */
-export const validationSchema = baseEnvSchema
-  .concat(contractEnvSchema)
  * Environment variables for migration safety and ordering.
  */
 export const migrationEnvSchema = Joi.object({
@@ -259,11 +251,53 @@ export const migrationEnvSchema = Joi.object({
 });
 
 /**
+ * Environment variables for the Stellar network configuration (BA-090).
+ *
+ * These variables let the wallet service validate addresses, issuer, asset
+ * codes, network passphrase, and Horizon consistently with the environment
+ * the backend was started in.
+ */
+export const stellarEnvSchema = Joi.object({
+  /** Stellar network the backend targets. */
+  STELLAR_NETWORK: Joi.string()
+    .valid('testnet', 'futurenet', 'mainnet', 'public', 'custom')
+    .default('testnet')
+    .description('Stellar network target.'),
+
+  /** Network passphrase that must match `STELLAR_NETWORK`. */
+  STELLAR_NETWORK_PASSPHRASE: Joi.string()
+    .valid(
+      'Test SDF Network ; September 2015',
+      'Public Global Stellar Network ; September 2015',
+      'Standalone Network ; February 2017',
+    )
+    .default('Test SDF Network ; September 2015')
+    .description(
+      'Stellar network passphrase. Must match the configured network.',
+    ),
+
+  /** Horizon server URL used to query balances and validate transactions. */
+  STELLAR_HORIZON_URL: Joi.string()
+    .uri()
+    .optional()
+    .description('Horizon server URL for Stellar queries.'),
+
+  /**
+   * Comma-separated `assetCode:issuer` allow-list for transactions,
+   * e.g. `XLM:native,USDC:GCGAC2ZAAYZLT...`. Native XLM uses `native`.
+   */
+  STELLAR_ALLOWED_ASSETS: Joi.string()
+    .optional()
+    .description('Allowed assetCode:issuer pairs (comma-separated).'),
+});
+
+/**
  * Combined validation schema that includes base, contract, migration,
- * and notification environment variables.
+ * notification, and stellar environment variables.
  * Used by config.module.ts to validate all env vars at startup.
  */
 export const validationSchema = baseEnvSchema
   .concat(contractEnvSchema)
   .concat(migrationEnvSchema)
-  .concat(notificationEnvSchema);
+  .concat(notificationEnvSchema)
+  .concat(stellarEnvSchema);
