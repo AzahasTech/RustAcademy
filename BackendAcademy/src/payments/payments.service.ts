@@ -1,8 +1,7 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { CorrelationLoggerService } from '../logging/logger.service';
-import { Injectable, Logger, Optional } from '@nestjs/common';
-import { DatabaseService } from '../database/database.service';
+import { DatabaseService, PaymentStatus } from '../database/database.service';
 import { TransactionHistoryQueryDto } from './dto/transaction-history-query.dto';
 import {
   StellarTransaction,
@@ -18,13 +17,13 @@ import { IContractAdapter } from '../contracts';
  * payment events are recorded on-chain for auditability. When it is
  * not available (e.g., test environments), the service operates
  * in off-chain-only mode.
+ *
+ * #665: Dependencies are declared once in the constructor. `DatabaseService`
+ * is required; `IContractAdapter` and `ConfigService` are optional so the
+ * service can be instantiated in unit tests with just the required
+ * collaborator. Webhook delivery tuning values are read from config with
+ * safe defaults (see constructor).
  */
-import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { DatabaseService, PaymentStatus } from '../database/database.service';
-import { TransactionHistoryQueryDto } from './dto/transaction-history-query.dto';
-import { StellarTransaction, TransactionHistoryResponse } from './interfaces/transaction.interface';
-
 export interface WebhookPayload {
   id: string;
   url: string;
@@ -118,17 +117,30 @@ export class PaymentsService {
   private static readonly MAX_LIMIT = 100;
   private static readonly DEFAULT_LIMIT = 20;
 
+  /** Default outgoing request timeout in ms. */
+  private readonly defaultTimeoutMs: number;
+  /** Maximum webhook delivery attempts (Issue #412). */
+  private readonly webhookMaxRetries: number;
+  /** Base backoff for webhook retries (Issue #412). */
+  private readonly webhookBaseBackoffMs: number;
+  /** Cap for webhook retry backoff (Issue #412). */
+  private readonly webhookMaxBackoffMs: number;
+
   constructor(
     private readonly databaseService: DatabaseService,
     @Optional()
     private readonly contractAdapter?: IContractAdapter,
-  ) {}
+    @Optional()
     private readonly configService?: ConfigService,
   ) {
-    this.defaultTimeoutMs = this.configService?.get<number>('DEFAULT_REQUEST_TIMEOUT_MS') ?? 30_000;
-    this.webhookMaxRetries = this.configService?.get<number>('WEBHOOK_MAX_RETRIES') ?? 5;
-    this.webhookBaseBackoffMs = this.configService?.get<number>('WEBHOOK_BASE_BACKOFF_MS') ?? 1_000;
-    this.webhookMaxBackoffMs = this.configService?.get<number>('WEBHOOK_MAX_BACKOFF_MS') ?? 60_000;
+    this.defaultTimeoutMs =
+      this.configService?.get<number>('DEFAULT_REQUEST_TIMEOUT_MS') ?? 30_000;
+    this.webhookMaxRetries =
+      this.configService?.get<number>('WEBHOOK_MAX_RETRIES') ?? 5;
+    this.webhookBaseBackoffMs =
+      this.configService?.get<number>('WEBHOOK_BASE_BACKOFF_MS') ?? 1_000;
+    this.webhookMaxBackoffMs =
+      this.configService?.get<number>('WEBHOOK_MAX_BACKOFF_MS') ?? 60_000;
   }
 
   /**
@@ -261,14 +273,6 @@ export class PaymentsService {
   async getAllCoupons() {
     return this.databaseService.getAllCoupons();
   }
-} async getRedemptionHistory(userId: string) {
-    return this.databaseService.getRedemptionsByUser(userId);
-  }
-
-  async getAllCoupons() {
-    return this.databaseService.getAllCoupons();
-  }
-}
 
   /**
    * Processes a validated, signature-checked payment webhook event.
