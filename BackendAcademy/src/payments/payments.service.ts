@@ -1,8 +1,7 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { CorrelationLoggerService } from '../logging/logger.service';
-import { Injectable, Logger, Optional } from '@nestjs/common';
-import { DatabaseService } from '../database/database.service';
+import { DatabaseService, PaymentStatus, WebhookOutboxRecord } from '../database/database.service';
 import { TransactionHistoryQueryDto } from './dto/transaction-history-query.dto';
 import {
   StellarTransaction,
@@ -19,12 +18,6 @@ import { IContractAdapter } from '../contracts';
  * not available (e.g., test environments), the service operates
  * in off-chain-only mode.
  */
-import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { DatabaseService, PaymentStatus } from '../database/database.service';
-import { TransactionHistoryQueryDto } from './dto/transaction-history-query.dto';
-import { StellarTransaction, TransactionHistoryResponse } from './interfaces/transaction.interface';
-
 export interface WebhookPayload {
   id: string;
   url: string;
@@ -118,11 +111,16 @@ export class PaymentsService {
   private static readonly MAX_LIMIT = 100;
   private static readonly DEFAULT_LIMIT = 20;
 
+  private readonly defaultTimeoutMs: number;
+  private readonly webhookMaxRetries: number;
+  private readonly webhookBaseBackoffMs: number;
+  private readonly webhookMaxBackoffMs: number;
+
   constructor(
     private readonly databaseService: DatabaseService,
     @Optional()
     private readonly contractAdapter?: IContractAdapter,
-  ) {}
+    @Optional()
     private readonly configService?: ConfigService,
   ) {
     this.defaultTimeoutMs = this.configService?.get<number>('DEFAULT_REQUEST_TIMEOUT_MS') ?? 30_000;
@@ -145,47 +143,174 @@ export class PaymentsService {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Durable webhook delivery outbox — Issue #666 (BA-098)
+  // ---------------------------------------------------------------------------
+
   /**
-   * Delivers a webhook with exponential backoff, jitter, and retry — Issue #412.
+   * Persists an outbound webhook *before* delivery is attempted so the event
+   * and its retry state survive a process failure. Subsequent delivery is
+   * driven by {@link deliverDueWebhooks}, which resumes from the outbox.
+   */
+  async enqueueWebhook(webhook: WebhookPayload): Promise<WebhookOutboxRecord> {
+    return this.databaseService.enqueueWebhookDelivery({
+      id: webhook.id,
+      url: webhook.url,
+      body: webhook.body,
+      signature: webhook.signature,
+      idempotencyKey: webhook.idempotencyKey,
+      maxRetries: webhook.maxRetries,
+    });
+  }
+
+  /**
+   * Claims every outbox record that is due (pending, or retrying with
+   * `nextRetryAt` in the past) and delivers each one once, recording the
+   * outcome back into the durable outbox. Failures are rescheduled with
+   * exponential backoff + jitter; exhausted retries become inspectable
+   * terminal failures.
+   */
+  async deliverDueWebhooks(
+    deliverFn: (url: string, body: string, headers: Record<string, string>) => Promise<number>,
+    options?: { limit?: number; webhookId?: string },
+  ): Promise<WebhookOutboxRecord[]> {
+    const due = await this.databaseService.claimDueWebhookDeliveries(options?.limit ?? 10);
+    const targeted = options?.webhookId ? due.filter((r) => r.id === options.webhookId) : due;
+    const processed: WebhookOutboxRecord[] = [];
+    for (const record of targeted) {
+      processed.push(await this.deliverWebhookAttempt(record, deliverFn));
+    }
+    return processed;
+  }
+
+  /**
+   * Delivers a single webhook and records the outcome durably.
+   */
+  private async deliverWebhookAttempt(
+    record: WebhookOutboxRecord,
+    deliverFn: (url: string, body: string, headers: Record<string, string>) => Promise<number>,
+  ): Promise<WebhookOutboxRecord> {
+    const attemptNumber = record.attempts + 1;
+    const headers: Record<string, string> = {
+      'X-Webhook-Signature': record.signature,
+      'X-Idempotency-Key': record.idempotencyKey,
+      'X-Webhook-Attempt': String(attemptNumber),
+    };
+    const correlationId = CorrelationLoggerService.getCorrelationId();
+    if (correlationId) {
+      headers['x-correlation-id'] = correlationId;
+    }
+
+    let statusCode: number | undefined;
+    let error: string | undefined;
+    try {
+      statusCode = await deliverFn(record.url, record.body, headers);
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+    }
+
+    if (statusCode !== undefined && statusCode >= 200 && statusCode < 300) {
+      this.logger.log(`Webhook ${record.id} delivered on attempt ${attemptNumber}`);
+      return (
+        (await this.databaseService.completeWebhookDelivery(record.id, statusCode)) ?? record
+      );
+    }
+
+    if (statusCode !== undefined && error === undefined) {
+      error = `HTTP ${statusCode}`;
+    }
+    return (
+      (await this.recordOutboxFailure(record.id, attemptNumber, statusCode, error)) ?? record
+    );
+  }
+
+  private async recordOutboxFailure(
+    id: string,
+    attemptNumber: number,
+    statusCode?: number,
+    error?: string,
+  ): Promise<WebhookOutboxRecord | null> {
+    const retryDelayMs = this.calculateRetryDelay(attemptNumber);
+    const result = await this.databaseService.recordWebhookDeliveryFailure(id, {
+      statusCode,
+      error,
+      retryDelayMs,
+    });
+    if (!result) return null;
+    if (result.terminal) {
+      this.logger.error(
+        `Webhook ${id} failed after ${result.record.attempts} attempts: ${result.record.lastError}`,
+      );
+    } else {
+      this.logger.warn(
+        `Webhook ${id} attempt ${result.record.attempts} failed (${result.record.lastError}), ` +
+          `retrying at ${result.record.nextRetryAt?.toISOString()}`,
+      );
+    }
+    return result.record;
+  }
+
+  /**
+   * Delivers a webhook with exponential backoff, jitter, and retry — Issue
+   * #412. Issue #666 (BA-098): delivery now goes through the durable outbox
+   * (enqueue before delivery, resumable retries, inspectable failures)
+   * instead of fire-and-forget in-process retries.
    */
   async deliverWebhookWithRetry(
     webhook: WebhookPayload,
     deliverFn: (url: string, body: string, headers: Record<string, string>) => Promise<number>,
   ): Promise<{ success: boolean; attempts: number; lastError?: string }> {
-    let lastError: string | undefined;
-    for (let attempt = 1; attempt <= webhook.maxRetries; attempt++) {
-      try {
-        const headers: Record<string, string> = {
-          'X-Webhook-Signature': webhook.signature,
-          'X-Idempotency-Key': webhook.idempotencyKey,
-          'X-Webhook-Attempt': String(attempt),
-        };
-        const correlationId = CorrelationLoggerService.getCorrelationId();
-        if (correlationId) {
-          headers['x-correlation-id'] = correlationId;
-        }
-        const statusCode = await deliverFn(webhook.url, webhook.body, headers);
-        if (statusCode >= 200 && statusCode < 300) {
-          this.logger.log(`Webhook ${webhook.id} delivered on attempt ${attempt}`);
-          return { success: true, attempts: attempt };
-        }
-        lastError = `HTTP ${statusCode}`;
-      } catch (err) {
-        lastError = err instanceof Error ? err.message : String(err);
-      }
+    await this.enqueueWebhook(webhook);
+    let record = await this.databaseService.getWebhookOutboxRecord(webhook.id);
 
-      if (attempt < webhook.maxRetries) {
-        const delay = this.calculateRetryDelay(attempt);
-        this.logger.warn(
-          `Webhook ${webhook.id} attempt ${attempt} failed (${lastError}), retrying in ${delay}ms`,
-        );
-        await new Promise((resolve) => setTimeout(resolve, delay));
+    // Drive the delivery to a terminal state through the durable outbox,
+    // honouring the exponential-backoff schedule stored on the record.
+    let guard = 0;
+    while (
+      record &&
+      record.status !== 'delivered' &&
+      record.status !== 'failed' &&
+      guard < 100
+    ) {
+      const [attempted] = await this.deliverDueWebhooks(deliverFn, {
+        webhookId: webhook.id,
+      });
+      record = attempted ?? record;
+      if (record.status === 'retrying' && record.nextRetryAt) {
+        const delayMs = Math.max(0, record.nextRetryAt.getTime() - Date.now());
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
+      guard++;
     }
-    this.logger.error(
-      `Webhook ${webhook.id} failed after ${webhook.maxRetries} attempts: ${lastError}`,
-    );
-    return { success: false, attempts: webhook.maxRetries, lastError };
+
+    if (!record) {
+      return { success: false, attempts: 0, lastError: 'Webhook not found in outbox' };
+    }
+    if (record.status === 'delivered') {
+      return { success: true, attempts: record.attempts };
+    }
+    return { success: false, attempts: record.attempts, lastError: record.lastError };
+  }
+
+  /**
+   * Returns the durable delivery record for a single webhook.
+   */
+  async getWebhookDeliveryRecord(id: string): Promise<WebhookOutboxRecord | null> {
+    return this.databaseService.getWebhookOutboxRecord(id);
+  }
+
+  /**
+   * Lists durable webhook delivery records, optionally filtered by status.
+   */
+  async listWebhookOutbox(filter?: { status?: WebhookOutboxRecord['status']; limit?: number }) {
+    return this.databaseService.listWebhookOutbox(filter);
+  }
+
+  /**
+   * Returns terminal (retry-exhausted) webhook delivery failures for inspection.
+   */
+  async getTerminalWebhookFailures(limit = 50): Promise<WebhookOutboxRecord[]> {
+    return this.databaseService.getTerminalWebhookFailures(limit);
   }
 
   /**
@@ -261,14 +386,6 @@ export class PaymentsService {
   async getAllCoupons() {
     return this.databaseService.getAllCoupons();
   }
-} async getRedemptionHistory(userId: string) {
-    return this.databaseService.getRedemptionsByUser(userId);
-  }
-
-  async getAllCoupons() {
-    return this.databaseService.getAllCoupons();
-  }
-}
 
   /**
    * Processes a validated, signature-checked payment webhook event.

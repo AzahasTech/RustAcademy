@@ -67,7 +67,14 @@ export class PaymentsController {
     }
 
     if (idempotencyKey) {
-      const replayed = this.antiCheatService.isWebhookReplayed(idempotencyKey);
+      // Issue #663: the replay claim is durable and fingerprint-bound to
+      // this payload, so a replayed callback is recognised even after a
+      // process restart and in-progress vs completed work is distinguished.
+      const rawPayload = typeof body === 'string' ? body : JSON.stringify(body ?? {});
+      const replayed = await this.antiCheatService.isWebhookReplayed(
+        idempotencyKey,
+        rawPayload,
+      );
       if (replayed) {
         this.metricsService.recordErrorEvent(WEBHOOK_METRIC_SOURCE, 'transport_replay');
         throw new UnauthorizedException('Duplicate/replayed webhook payload');
