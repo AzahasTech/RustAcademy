@@ -70,7 +70,7 @@ export class AuthSessionController {
   @HttpCode(HttpStatus.OK)
   getActiveSessions(
     @Param('userId') userId: string,
-  ): Omit<Session, 'refreshToken'>[] {
+  ): Omit<Session, 'refreshTokenHash'>[] {
     return this.authSessionService.getActiveSessions(userId);
   }
 
