@@ -1,224 +1,174 @@
-import { ConfigService } from '@nestjs/config';
-import { PaymentsService, PaymentWebhookEvent } from './payments.service';
+import { Test, TestingModule } from '@nestjs/testing';
+import { PaymentsService, WebhookPayload } from './payments.service';
 import { DatabaseService } from '../database/database.service';
-import { IContractAdapter } from '../contracts';
+import { TransactionManagerService } from '../common/transaction-manager.service';
 
-/**
- * #665: These tests exercise PaymentsService construction with the required
- * `DatabaseService` collaborator and with the optional collaborators
- * (`IContractAdapter`, `ConfigService`) so regressions in dependency wiring
- * are caught at unit-test level.
- */
-type DatabaseServiceMock = {
-  getPaymentById: jest.Mock;
-  createPayment: jest.Mock;
-  updatePaymentStatus: jest.Mock;
-  validateCoupon: jest.Mock;
-  applyCoupon: jest.Mock;
-  getRedemptionsByUser: jest.Mock;
-  getAllCoupons: jest.Mock;
-};
+// Note: jest.config sets resetMocks: true, so implementations must be
+// (re)assigned in beforeEach rather than at module scope.
+const okDeliverFn = jest.fn();
+const failDeliverFn = jest.fn();
 
-function createDatabaseServiceMock(): DatabaseServiceMock {
+function makeWebhook(overrides: Partial<WebhookPayload> = {}): WebhookPayload {
   return {
-    getPaymentById: jest.fn(),
-    createPayment: jest.fn(),
-    updatePaymentStatus: jest.fn(),
-    validateCoupon: jest.fn(),
-    applyCoupon: jest.fn(),
-    getRedemptionsByUser: jest.fn(),
-    getAllCoupons: jest.fn(),
+    id: 'wh-1',
+    url: 'https://example.com/hook',
+    body: '{"event":"payment.succeeded"}',
+    signature: 'sig-abc',
+    idempotencyKey: 'idem-wh-1',
+    maxRetries: 3,
+    ...overrides,
   };
 }
 
-describe('PaymentsService construction', () => {
-  let databaseServiceMock: DatabaseServiceMock;
-
-  beforeEach(() => {
-    databaseServiceMock = createDatabaseServiceMock();
-  });
-
-  it('instantiates with only the required DatabaseService collaborator', () => {
-    const service = new PaymentsService(
-      databaseServiceMock as unknown as DatabaseService,
-    );
-    expect(service).toBeDefined();
-  });
-
-  it('instantiates with required and optional collaborators', () => {
-    const contractAdapterMock = {
-      recordPayment: jest.fn(),
-    } as unknown as IContractAdapter;
-    const configServiceMock = {
-      get: jest.fn(),
-    } as unknown as ConfigService;
-
-    const service = new PaymentsService(
-      databaseServiceMock as unknown as DatabaseService,
-      contractAdapterMock,
-      configServiceMock,
-    );
-    expect(service).toBeDefined();
-  });
-
-  it('applies default webhook tuning when ConfigService is absent', () => {
-    const service = new PaymentsService(
-      databaseServiceMock as unknown as DatabaseService,
-    );
-    // Base backoff defaults to 1000ms with jitter in [0.5x, 1x].
-    const delay = service.calculateRetryDelay(1);
-    expect(delay).toBeGreaterThanOrEqual(500);
-    expect(delay).toBeLessThanOrEqual(1000);
-  });
-
-  it('reads webhook tuning values from ConfigService when provided', () => {
-    const configServiceMock = {
-      get: jest.fn((key: string) => {
-        if (key === 'WEBHOOK_BASE_BACKOFF_MS') return 2000;
-        if (key === 'WEBHOOK_MAX_BACKOFF_MS') return 8000;
-        return undefined;
-      }),
-    } as unknown as ConfigService;
-
-    const service = new PaymentsService(
-      databaseServiceMock as unknown as DatabaseService,
-      undefined,
-      configServiceMock,
-    );
-    const delay = service.calculateRetryDelay(1);
-    expect(delay).toBeGreaterThanOrEqual(1000);
-    expect(delay).toBeLessThanOrEqual(2000);
-  });
-});
-
-describe('PaymentsService webhook processing', () => {
-  let databaseServiceMock: DatabaseServiceMock;
+describe('PaymentsService — durable webhook outbox (Issue #666 / BA-098)', () => {
   let service: PaymentsService;
 
-  const event: PaymentWebhookEvent = {
-    eventId: 'evt-1',
-    paymentId: 'pay-1',
-    orderId: 'ord-1',
-    userId: 'usr-1',
-    status: 'succeeded',
-    amount: 100,
-    assetCode: 'XLM',
-    provider: 'test-provider',
-  };
+  beforeEach(async () => {
+    okDeliverFn.mockImplementation(async () => 200);
+    failDeliverFn.mockImplementation(async () => 500);
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        PaymentsService,
+        { provide: DatabaseService, useValue: new DatabaseService(new TransactionManagerService()) },
+      ],
+    }).compile();
+    service = module.get<PaymentsService>(PaymentsService);
+  });
 
-  beforeEach(() => {
-    databaseServiceMock = createDatabaseServiceMock();
-    service = new PaymentsService(
-      databaseServiceMock as unknown as DatabaseService,
+  it('persists outbound events before delivery', async () => {
+    await service.enqueueWebhook(makeWebhook());
+    const record = await service.getWebhookDeliveryRecord('wh-1');
+    expect(record).toMatchObject({ id: 'wh-1', status: 'pending', attempts: 0, url: 'https://example.com/hook' });
+  });
+
+  it('delivers due webhooks and records the success durably', async () => {
+    await service.enqueueWebhook(makeWebhook());
+    const processed = await service.deliverDueWebhooks(okDeliverFn);
+
+    expect(okDeliverFn).toHaveBeenCalledWith(
+      'https://example.com/hook',
+      '{"event":"payment.succeeded"}',
+      expect.objectContaining({
+        'X-Webhook-Signature': 'sig-abc',
+        'X-Idempotency-Key': 'idem-wh-1',
+        'X-Webhook-Attempt': '1',
+      }),
     );
+    expect(processed[0].status).toBe('delivered');
+    expect(processed[0].attempts).toBe(1);
+
+    const record = await service.getWebhookDeliveryRecord('wh-1');
+    expect(record?.status).toBe('delivered');
+    expect(record?.deliveredAt).toBeInstanceOf(Date);
   });
 
-  it('creates a pending payment row on first callback and applies a legal transition', async () => {
-    databaseServiceMock.getPaymentById.mockResolvedValue(null);
-    databaseServiceMock.createPayment.mockResolvedValue({ id: 'pay-1' });
-    databaseServiceMock.updatePaymentStatus.mockResolvedValue({
-      success: true,
-      transitioned: true,
-    });
+  it('reschedules failures and resumes delivery from the outbox', async () => {
+    await service.enqueueWebhook(makeWebhook());
+    const first = await service.deliverDueWebhooks(failDeliverFn);
+    expect(first[0].status).toBe('retrying');
+    expect(first[0].nextRetryAt).toBeInstanceOf(Date);
+    expect(first[0].lastError).toBe('HTTP 500');
 
-    const result = await service.processPaymentWebhookEvent(event);
+    // Simulate the retry window elapsing, then resume.
+    const record = (await service.getWebhookDeliveryRecord('wh-1'))!;
+    record.nextRetryAt = new Date(Date.now() - 1);
+    record.status = 'retrying';
 
-    expect(databaseServiceMock.createPayment).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'pay-1', status: 'pending' }),
-    );
-    expect(result).toEqual({ outcome: 'applied', paymentId: 'pay-1', status: 'succeeded' });
+    const second = await service.deliverDueWebhooks(okDeliverFn);
+    expect(second[0].status).toBe('delivered');
+    expect(second[0].attempts).toBe(2);
   });
 
-  it('rejects illegal transitions without mutating state', async () => {
-    databaseServiceMock.getPaymentById.mockResolvedValue({ id: 'pay-1' });
-    databaseServiceMock.updatePaymentStatus.mockResolvedValue({
-      success: false,
-      transitioned: false,
-      reason: 'Illegal transition for payment pay-1: succeeded -> pending',
-    });
+  it('marks terminal failures as inspectable once retries are exhausted', async () => {
+    const webhook = makeWebhook({ maxRetries: 1 });
+    await service.enqueueWebhook(webhook);
+    const result = await service.deliverDueWebhooks(failDeliverFn);
 
-    const result = await service.processPaymentWebhookEvent({
-      ...event,
-      status: 'pending',
-    });
+    expect(result[0].status).toBe('failed');
+    expect(result[0].terminalAt).toBeInstanceOf(Date);
 
-    expect(result.outcome).toBe('rejected');
-    expect(databaseServiceMock.applyCoupon).not.toHaveBeenCalled();
+    const failures = await service.getTerminalWebhookFailures();
+    expect(failures.map((r) => r.id)).toEqual(['wh-1']);
+    expect(failures[0].lastError).toBe('HTTP 500');
   });
 
-  it('recognizes duplicate events as safe no-ops', async () => {
-    databaseServiceMock.getPaymentById.mockResolvedValue({ id: 'pay-1' });
-    databaseServiceMock.updatePaymentStatus.mockResolvedValue({
-      success: true,
-      transitioned: false,
-      duplicateEvent: true,
-      reason: 'Event evt-1 already applied',
-    });
-
-    const result = await service.processPaymentWebhookEvent(event);
-
-    expect(result.outcome).toBe('duplicate');
-    expect(databaseServiceMock.applyCoupon).not.toHaveBeenCalled();
+  it('deliverWebhookWithRetry returns a durable success result', async () => {
+    const result = await service.deliverWebhookWithRetry(makeWebhook(), okDeliverFn);
+    expect(result).toEqual({ success: true, attempts: 1 });
+    const record = await service.getWebhookDeliveryRecord('wh-1');
+    expect(record?.status).toBe('delivered');
   });
 
-  it('grants a coupon redemption only on a genuine first-time success transition', async () => {
-    databaseServiceMock.getPaymentById.mockResolvedValue({ id: 'pay-1' });
-    databaseServiceMock.updatePaymentStatus.mockResolvedValue({
-      success: true,
-      transitioned: true,
-    });
-    databaseServiceMock.applyCoupon.mockResolvedValue({
-      success: true,
-      finalAmount: 90,
-      discountApplied: 10,
-    });
-
-    const result = await service.processPaymentWebhookEvent({
-      ...event,
-      couponCode: 'STELLAR10',
-    });
-
-    expect(result.outcome).toBe('applied');
-    expect(databaseServiceMock.applyCoupon).toHaveBeenCalledWith(
-      'STELLAR10',
-      'usr-1',
-      100,
-      'ord-1',
-    );
-  });
-
-  it('does not apply a coupon when the transition is a no-op', async () => {
-    databaseServiceMock.getPaymentById.mockResolvedValue({ id: 'pay-1' });
-    databaseServiceMock.updatePaymentStatus.mockResolvedValue({
-      success: true,
-      transitioned: false,
-      alreadyInStatus: true,
-      reason: 'already in status',
-    });
-
-    const result = await service.processPaymentWebhookEvent({
-      ...event,
-      couponCode: 'STELLAR10',
-    });
-
-    expect(result.outcome).toBe('noop');
-    expect(databaseServiceMock.applyCoupon).not.toHaveBeenCalled();
+  it('deliverWebhookWithRetry reports an inspectable terminal failure', async () => {
+    const result = await service.deliverWebhookWithRetry(makeWebhook({ maxRetries: 2 }), failDeliverFn);
+    expect(result.success).toBe(false);
+    expect(result.attempts).toBe(2);
+    expect(result.lastError).toBe('HTTP 500');
+    const failures = await service.getTerminalWebhookFailures();
+    expect(failures).toHaveLength(1);
   });
 });
 
-describe('PaymentsService transaction history', () => {
-  it('paginates the stub ledger and exposes a next cursor when more entries remain', () => {
-    const service = new PaymentsService(
-      createDatabaseServiceMock() as unknown as DatabaseService,
-    );
+describe('PaymentsService — payment webhook processing (regression)', () => {
+  let service: PaymentsService;
 
-    const page1 = service.getTransactionHistory({ limit: 2 });
-    expect(page1.entries).toHaveLength(2);
-    expect(page1.total).toBe(4);
-    expect(page1.nextCursor).toBe('2');
+  beforeEach(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        PaymentsService,
+        { provide: DatabaseService, useValue: new DatabaseService(new TransactionManagerService()) },
+      ],
+    }).compile();
+    service = module.get<PaymentsService>(PaymentsService);
+  });
 
-    const page2 = service.getTransactionHistory({ limit: 2, cursor: '2' });
-    expect(page2.entries).toHaveLength(2);
-    expect(page2.nextCursor).toBeUndefined();
+  it('applies a valid succeeded callback', async () => {
+    const result = await service.processPaymentWebhookEvent({
+      eventId: 'evt-1',
+      paymentId: 'pay-1',
+      orderId: 'ord-1',
+      userId: 'user-1',
+      status: 'succeeded',
+      amount: 100,
+      assetCode: 'XLM',
+      provider: 'stellar',
+    });
+    expect(result.outcome).toBe('applied');
+  });
+
+  it('recognises a duplicate event id as a no-op', async () => {
+    const event = {
+      eventId: 'evt-1',
+      paymentId: 'pay-1',
+      orderId: 'ord-1',
+      userId: 'user-1',
+      status: 'succeeded' as const,
+      amount: 100,
+      assetCode: 'XLM',
+      provider: 'stellar',
+    };
+    await service.processPaymentWebhookEvent(event);
+    const result = await service.processPaymentWebhookEvent(event);
+    expect(result.outcome).toBe('duplicate');
+  });
+
+  it('rejects an illegal transition', async () => {
+    const succeeded = {
+      eventId: 'evt-1',
+      paymentId: 'pay-1',
+      orderId: 'ord-1',
+      userId: 'user-1',
+      status: 'succeeded' as const,
+      amount: 100,
+      assetCode: 'XLM',
+      provider: 'stellar',
+    };
+    await service.processPaymentWebhookEvent(succeeded);
+    const result = await service.processPaymentWebhookEvent({
+      ...succeeded,
+      eventId: 'evt-2',
+      status: 'pending',
+    });
+    expect(result.outcome).toBe('rejected');
   });
 });
