@@ -93,11 +93,23 @@ impl<'a> TestContext<'a> {
         ctx
     }
 
+    /// Same as `with_admin()` but also grants the Governance role to the admin.
+    pub fn with_governance() -> Self {
+        let ctx = Self::with_admin();
+        ctx.client.grant_role(&ctx.admin, &ctx.admin, &crate::types::Role::Governance);
+        ctx
+    }
+
     /// `with_admin()` + a fee already set. `fee_bps` is in basis points (250 = 2.5%).
     pub fn with_fees(fee_bps: u32) -> Self {
         let ctx = Self::with_admin();
-        ctx.client
-            .set_fee_config(&ctx.admin, &FeeConfig { fee_bps });
+        ctx.client.set_fee_config(
+            &ctx.admin,
+            &FeeConfig {
+                fee_bps,
+                schema_version: crate::types::FEE_CONFIG_SCHEMA_VERSION,
+            },
+        );
         ctx.client
             .set_platform_wallet(&ctx.admin, &ctx.platform_wallet);
         ctx

@@ -45,8 +45,11 @@ pub fn deployment_metadata(env: &Env) -> DeploymentMetadata {
 
 /// Return a non-mutating health summary of the contract.
 ///
-/// The status is derived from pause, emergency, and upgrade flags.  It is
+/// The status is derived from pause, emergency, and upgrade flags. It is
 /// ordered from most to least severe: emergency > upgrading > paused > healthy.
+///
+/// Operators and tooling use this inspection endpoint during incident response
+/// and emergency recovery playbooks (see `EMERGENCY_RECOVERY_PLAYBOOK.md`).
 pub fn contract_health(env: &Env) -> ContractHealth {
     let paused = storage::is_paused(env);
     let emergency_mode = storage::is_emergency_mode(env);
@@ -93,6 +96,7 @@ pub fn upgrade_state(env: &Env) -> UpgradeState {
         window_active: storage::is_upgrade_window_active(env),
         window_start,
         window_end,
+        gate_enabled: storage::is_upgrade_gate_enabled(env),
     }
 }
 
@@ -126,8 +130,7 @@ pub fn check_schema_compatibility(
     let current_event_schema_version = EVENT_SCHEMA_VERSION;
 
     let contract_version_compatible = requested_contract_version == current_contract_version
-        || (requested_contract_version >= LEGACY_CONTRACT_VERSION
-            && requested_contract_version <= CURRENT_CONTRACT_VERSION);
+        || requested_contract_version <= CURRENT_CONTRACT_VERSION;
 
     let event_schema_version_compatible = requested_event_schema_version == 1
         || requested_event_schema_version == current_event_schema_version;

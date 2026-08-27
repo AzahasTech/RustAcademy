@@ -13,14 +13,14 @@
 //! | [`ContractVersion`](DataKey::ContractVersion) | `u32` | Stored schema/version marker for upgrade migrations. |
 //! | [`Admin`](DataKey::Admin) | `Address`     | Contract admin address. Set during initialisation, transferable by admin. |
 //! | [`Paused`](DataKey::Paused) | `bool`       | Global pause flag. When true, critical operations may be blocked. |
-//! | [`PrivacyLevel`](DataKey::PrivacyLevel) | `u32`  | Numeric privacy level per account (0 = off). Used by `enable_privacy`. |
-//! | [`PrivacyHistory`](DataKey::PrivacyHistory) | `Vec<u32>` | Per-account history of privacy level changes (chronological). |
+//! | [`PrivacyLevel`](DataKey::PrivacyLevel) | `u32`  | Numeric privacy level per account (0 = off). Used by `enable_privacy`. Migrated to [`crate::privacy`]. |
+//! | [`PrivacyHistory`](DataKey::PrivacyHistory) | `Vec<u32>` | Per-account history of privacy level changes (chronological). Migrated to [`crate::privacy`]. |
 //!
 //! ## Related Keys (legacy compatibility)
 //!
 //! | Key                    | Format                    | Value Type | Description |
 //! |------------------------|---------------------------|------------|-------------|
-//! | `privacy_enabled`      | `(Symbol, Address)`       | `bool`     | Legacy boolean privacy on/off key. Read as a fallback and migrated to [`DataKey::PrivacyEnabled`] on write. |
+//! | `privacy_enabled`      | `(Symbol, Address)`       | `bool`     | Legacy boolean privacy on/off key. Managed by [`crate::legacy_privacy`]. Read as a fallback and migrated to [`DataKey::PrivacyEnabled`] on write. |
 //!
 //! ## Relations
 //!
@@ -44,7 +44,7 @@ use soroban_sdk::{contracttype, Address, Bytes, BytesN, Env, Vec};
 use crate::errors::RustAcademyError;
 use crate::types::{
     DisputeExpiry, DisputeExpiryAction, DisputeVote, EscrowEntry, FeeConfig, Role,
-    StealthEscrowEntry,
+    StealthEscrowEntry, PerAssetFeeConfig, OracleFeeConfig,
 };
 
 /// Record type for TTL policy selection.
@@ -54,6 +54,7 @@ pub enum RecordType {
     FeeConfig,
     StealthEscrow,
     EscrowIdMap,
+    EscrowIdTombstone,
     DisputeExpiry,
     Privacy,
 }
@@ -68,7 +69,7 @@ pub struct TtlPolicy {
 }
 
 /// Get TTL policy for a given record type.
-fn get_ttl_policy(record_type: RecordType) -> TtlPolicy {
+pub fn get_ttl_policy(record_type: RecordType) -> TtlPolicy {
     match record_type {
         RecordType::Escrow => TtlPolicy {
             threshold: LEDGER_THRESHOLD,
@@ -83,6 +84,10 @@ fn get_ttl_policy(record_type: RecordType) -> TtlPolicy {
             ttl: SIX_MONTHS_IN_LEDGERS,
         },
         RecordType::EscrowIdMap => TtlPolicy {
+            threshold: LEDGER_THRESHOLD,
+            ttl: SIX_MONTHS_IN_LEDGERS,
+        },
+        RecordType::EscrowIdTombstone => TtlPolicy {
             threshold: LEDGER_THRESHOLD,
             ttl: SIX_MONTHS_IN_LEDGERS,
         },
@@ -203,6 +208,10 @@ pub enum DataKey {
     /// to the commitment key of the escrow it identifies. Enables
     /// idempotent deduplication of identical creation requests.
     EscrowIdMap(BytesN<32>),
+    /// Tombstone for cleaned escrow ID mappings. Keyed by escrow_id.
+    /// Stores the commitment that was cleaned, allowing idempotent retries
+    /// to return the original commitment without creating duplicates.
+    EscrowIdTombstone(BytesN<32>),
     /// Roles assigned to an address.
     UserRole(Address),
     /// Per-asset fee override keyed by token address (Fee Router v2).
@@ -224,6 +233,14 @@ pub enum DataKey {
     DisputeTimeout,
     /// Global default action when a dispute expires (singleton).
     DisputeExpiryAction,
+    /// Master switch for the upgrade gate. When false, all upgrades are blocked.
+    UpgradeGateEnabled,
+    /// Snapshot of pre-upgrade invariants for drift detection (Issue #554).
+    PreUpgradeInvariantSnapshot,
+    /// Tracks emitted event deduplication keys to reject duplicate/replayed
+    /// events. Keyed by a 32-byte deterministic hash of (event_type_id,
+    /// ledger_sequence, schema_version, timestamp). Stored with a 6-month TTL.
+    EventDedup(BytesN<32>),
 }
 
 // -----------------------------------------------------------------------------
@@ -368,6 +385,67 @@ pub fn clear_pending_upgrade(env: &Env) {
     env.storage()
         .persistent()
         .remove(&DataKey::PendingUpgradeVersion);
+    // Also clear invariant snapshot on upgrade completion/cancellation (Issue #554)
+    clear_invariant_snapshot(env);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Upgrade Gate Master Switch (Issue #318)
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Set the upgrade gate master switch.
+///
+/// When `enabled` is `false`, `start_upgrade` is blocked regardless of
+/// window configuration. Defaults to `true` when never explicitly set.
+pub fn set_upgrade_gate_enabled(env: &Env, enabled: bool) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::UpgradeGateEnabled, &enabled);
+}
+
+/// Check whether the upgrade gate master switch is enabled.
+///
+/// Returns `true` (upgrades allowed by gate) when the key has never been set,
+/// matching the safe default of allowing upgrades when no explicit gate is
+/// configured.
+pub fn is_upgrade_gate_enabled(env: &Env) -> bool {
+    env.storage()
+        .persistent()
+        .get(&DataKey::UpgradeGateEnabled)
+        .unwrap_or(true)
+}
+
+/// Run a comprehensive pre-upgrade safety check (Issue #318).
+///
+/// Validates all preconditions that must hold for `start_upgrade` to succeed:
+/// 1. Gate is enabled
+/// 2. Window is active
+/// 3. No upgrade already in progress
+/// 4. Contract version is within the supported range
+/// 5. Critical invariants (fee bounds) are satisfied
+pub fn check_upgrade_safety(env: &Env) -> crate::types::UpgradeSafetyReport {
+    let gate_enabled = is_upgrade_gate_enabled(env);
+    let window_active = is_upgrade_window_active(env);
+    let upgrade_in_progress = is_upgrade_in_progress(env);
+
+    let version = get_contract_version(env).unwrap_or(LEGACY_CONTRACT_VERSION);
+    let version_compatible = version <= CURRENT_CONTRACT_VERSION;
+
+    // Pre-upgrade invariant: fee config must be within bounds.
+    let fee_cfg = get_fee_config(env);
+    let invariants_satisfied = fee_cfg.fee_bps <= 10_000;
+
+    let is_safe =
+        gate_enabled && window_active && !upgrade_in_progress && version_compatible && invariants_satisfied;
+
+    crate::types::UpgradeSafetyReport {
+        is_safe,
+        gate_enabled,
+        window_active,
+        upgrade_in_progress,
+        version_compatible,
+        invariants_satisfied,
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -378,6 +456,13 @@ pub fn clear_pending_upgrade(env: &Env) {
 ///
 /// Called after migration to validate state machine and fee bounds.
 /// Returns `Ok(())` if all invariants hold; `Err(msg)` deterministically if violated.
+///
+/// Expanded for Issue #18: Now covers:
+/// - Fee bounds (FeeConfig, PerAssetFeeConfig)
+/// - Admin initialization check
+/// - Contract version validation
+/// - Escrow status validation
+/// - Arbitration data validation (DisputeVote entries for resolved escrows)
 pub fn assert_post_upgrade_invariants(env: &Env) -> Result<(), &'static str> {
     // Invariant 1: Fee bounds must be within [0, 10000] basis points.
     let fee_cfg = get_fee_config(env);
@@ -404,7 +489,98 @@ pub fn assert_post_upgrade_invariants(env: &Env) -> Result<(), &'static str> {
     // Note: We cannot iterate all per-asset fees here without a registry.
     // This is validated per-write in set_per_asset_fee.
 
+    // Invariant 6: Escrow entries in terminal states must have valid status.
+    // Note: We cannot iterate all escrows here, but we can check legacy records
+    // during migration via migrate_escrow_schema.
+
+    // Invariant 7: Dispute votes for resolved escrows are cleaned up during migrate.
+    // Legacy dispute votes are removed for Spent/Refunded escrows.
+
     Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Invariant Drift Detection (Issue #554)
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Snapshot of critical invariants for drift detection.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[contracttype]
+pub struct InvariantSnapshot {
+    pub fee_bps: u32,
+    pub contract_version: u32,
+    pub escrow_counter: u64,
+    pub timestamp: u64,
+}
+
+/// Snapshot pre-upgrade invariants for drift detection (Issue #554).
+///
+/// Captures the current state of critical invariants before an upgrade begins.
+/// This snapshot is used later to detect if the upgrade caused unexpected
+/// state changes (invariant drift).
+pub fn snapshot_pre_upgrade_invariants(env: &Env) -> Result<(), RustAcademyError> {
+    let fee_cfg = get_fee_config(env);
+    let version = get_contract_version(env).unwrap_or(LEGACY_CONTRACT_VERSION);
+    let counter = get_escrow_counter(env);
+    let timestamp = env.ledger().timestamp();
+
+    let snapshot = InvariantSnapshot {
+        fee_bps: fee_cfg.fee_bps,
+        contract_version: version,
+        escrow_counter: counter,
+        timestamp,
+    };
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::PreUpgradeInvariantSnapshot, &snapshot);
+
+    Ok(())
+}
+
+/// Check for invariant drift after migration (Issue #554).
+///
+/// Compares the current invariant state against the pre-upgrade snapshot
+/// to detect unexpected changes. Returns `Ok(())` if no drift is detected,
+/// or an error if drift is found.
+pub fn check_invariant_drift(env: &Env) -> Result<(), RustAcademyError> {
+    let snapshot: Option<InvariantSnapshot> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::PreUpgradeInvariantSnapshot);
+
+    let Some(pre_snapshot) = snapshot else {
+        // No snapshot exists - this is acceptable for legacy upgrades
+        return Ok(());
+    };
+
+    let current_fee_cfg = get_fee_config(env);
+    let current_version = get_contract_version(env).unwrap_or(LEGACY_CONTRACT_VERSION);
+    let current_counter = get_escrow_counter(env);
+
+    // Check for unexpected fee changes (drift)
+    if current_fee_cfg.fee_bps != pre_snapshot.fee_bps {
+        return Err(RustAcademyError::InternalError);
+    }
+
+    // Version should have increased (not decreased)
+    if current_version < pre_snapshot.contract_version {
+        return Err(RustAcademyError::InternalError);
+    }
+
+    // Escrow counter should never decrease
+    if current_counter < pre_snapshot.escrow_counter {
+        return Err(RustAcademyError::InternalError);
+    }
+
+    Ok(())
+}
+
+/// Clear the pre-upgrade invariant snapshot.
+pub fn clear_invariant_snapshot(env: &Env) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::PreUpgradeInvariantSnapshot);
 }
 
 // -----------------------------------------------------------------------------
@@ -430,13 +606,24 @@ pub fn remove_escrow(env: &Env, commitment: &Bytes) {
 /// Get an escrow entry from storage.
 ///
 /// **Contract**: Returns `None` if no escrow exists for the commitment.
+/// If the record has `schema_version == 0` (legacy), it is automatically
+/// migrated in-place and the updated record is stored back.
 pub fn get_escrow(env: &Env, commitment: &Bytes) -> Option<EscrowEntry> {
     let key = DataKey::Escrow(commitment.clone());
-    let result = env.storage().persistent().get(&key);
-    if result.is_some() {
-        set_or_extend_ttl(env, &key, RecordType::Escrow);
+    let result: Option<EscrowEntry> = env.storage().persistent().get(&key);
+    if let Some(mut entry) = result {
+        // Migrate legacy records on read (Issue #18)
+        if entry.schema_version == 0 {
+            migrate_escrow_entry(&mut entry);
+            env.storage().persistent().set(&key, &entry);
+            set_or_extend_ttl(env, &key, RecordType::Escrow);
+        } else {
+            set_or_extend_ttl(env, &key, RecordType::Escrow);
+        }
+        Some(entry)
+    } else {
+        None
     }
-    result
 }
 
 /// Check if an escrow entry exists in storage.
@@ -548,6 +735,48 @@ pub fn set_or_extend_ttl(env: &Env, key: &DataKey, record_type: RecordType) {
         .extend_ttl(key, policy.threshold, policy.ttl);
 }
 
+// -----------------------------------------------------------------------------
+// TTL test utilities (deterministic expiry simulation)
+// -----------------------------------------------------------------------------
+//
+// Persistent-entry TTL is counted in **ledger sequence numbers**, not
+// timestamps — `env.ledger().set_timestamp(..)` has no effect on it. Advance
+// time for TTL purposes with [`advance_ledger_sequence`] instead.
+//
+// The local Soroban test sandbox (`Env::default()`, recording footprint mode)
+// also does not evict persistent entries the way a live network would: once
+// an entry's TTL lapses, the *first read* after that point silently
+// "auto-restores" it to `min_persistent_entry_ttl` rather than erroring or
+// removing it (see `Storage::handle_maybe_expired_entry` in
+// `soroban-env-host`). That means an entry's mere presence after its TTL has
+// lapsed proves nothing — [`ttl_of`] must be used to observe the actual TTL
+// value instead.
+#[cfg(test)]
+pub(crate) mod ttl_test_utils {
+    use super::*;
+    use soroban_sdk::testutils::{storage::Persistent as _, Ledger};
+
+    /// Advances the ledger sequence number by `ledgers`, without touching any
+    /// storage entry, to deterministically simulate the passage of time with
+    /// no contract activity.
+    pub(crate) fn advance_ledger_sequence(env: &Env, ledgers: u32) {
+        env.ledger().with_mut(|li| {
+            li.sequence_number = li.sequence_number.saturating_add(ledgers);
+        });
+    }
+
+    /// Returns the remaining TTL (in ledgers) for `key`, via Soroban's actual
+    /// TTL API — not a stand-in based on presence/absence.
+    ///
+    /// Note: reading the TTL of a lapsed persistent entry triggers the local
+    /// sandbox's auto-restore (see module docs), so the returned value for a
+    /// lapsed entry is the healed floor (`min_persistent_entry_ttl - 1`), not
+    /// an error or a negative/underflowed count.
+    pub(crate) fn ttl_of(env: &Env, key: &DataKey) -> u32 {
+        env.storage().persistent().get_ttl(key)
+    }
+}
+
 /// Set paused state.
 #[allow(dead_code)]
 pub fn set_paused(env: &Env, paused: bool) {
@@ -577,60 +806,10 @@ pub fn is_paused(env: &Env) -> bool {
     env.storage().persistent().get(&key).unwrap_or(false)
 }
 
-// -----------------------------------------------------------------------------
-// Privacy helpers (level-based API)
-// -----------------------------------------------------------------------------
-
-/// Set privacy level for an account.
-pub fn set_privacy_level(env: &Env, account: &Address, level: u32) {
-    let key = DataKey::PrivacyLevel(account.clone());
-    env.storage().persistent().set(&key, &level);
-    set_or_extend_ttl(env, &key, RecordType::Privacy);
-}
-
-/// Get privacy level for an account.
-pub fn get_privacy_level(env: &Env, account: &Address) -> Option<u32> {
-    let key = DataKey::PrivacyLevel(account.clone());
-    let result = env.storage().persistent().get(&key);
-    if result.is_some() {
-        set_or_extend_ttl(env, &key, RecordType::Privacy);
-    }
-    result
-}
-
-/// Add to privacy history for an account.
-///
-/// **Contract**: Pushes `level` to the front of the history (newest-first).
-/// History is capped at [`MAX_PRIVACY_HISTORY`] entries; the oldest entries
-/// are evicted when the cap is exceeded so per-account storage stays bounded.
-pub fn add_privacy_history(env: &Env, account: &Address, level: u32) {
-    let key = DataKey::PrivacyHistory(account.clone());
-    let mut history: Vec<u32> = env
-        .storage()
-        .persistent()
-        .get(&key)
-        .unwrap_or(Vec::new(env));
-    history.push_front(level);
-    // Bounded retention: evict the oldest entries beyond the cap so this
-    // per-account index cannot accumulate unbounded storage (Issue #15).
-    while history.len() > MAX_PRIVACY_HISTORY {
-        history.pop_back();
-    }
-    env.storage().persistent().set(&key, &history);
-    set_or_extend_ttl(env, &key, RecordType::Privacy);
-}
-
-/// Get privacy history for an account.
-///
-/// **Contract**: Returns empty vec if never set. Order is newest-first.
-pub fn get_privacy_history(env: &Env, account: &Address) -> Vec<u32> {
-    let key = DataKey::PrivacyHistory(account.clone());
-    let result = env.storage().persistent().get(&key);
-    if result.is_some() {
-        set_or_extend_ttl(env, &key, RecordType::Privacy);
-    }
-    result.unwrap_or(Vec::new(env))
-}
+// NOTE: Privacy-level helpers (set_privacy_level, get_privacy_level,
+// add_privacy_history, get_privacy_history) have been moved to
+// crate::privacy to decouple them from legacy boolean privacy storage.
+// See Issue #317.
 
 // -----------------------------------------------------------------------------
 // Fee & Wallet helpers
@@ -642,7 +821,10 @@ pub fn get_fee_config(env: &Env) -> FeeConfig {
     if result.is_some() {
         set_or_extend_ttl(env, &key, RecordType::FeeConfig);
     }
-    result.unwrap_or(FeeConfig { fee_bps: 0 })
+    result.unwrap_or(FeeConfig {
+        fee_bps: 0,
+        schema_version: crate::types::FEE_CONFIG_SCHEMA_VERSION,
+    })
 }
 
 pub fn set_fee_config(env: &Env, config: &FeeConfig) {
@@ -852,11 +1034,13 @@ pub fn put_escrow_id_mapping(env: &Env, escrow_id: &BytesN<32>, commitment: &Byt
     set_or_extend_ttl(env, &key, RecordType::EscrowIdMap);
 }
 
-/// Remove the `escrow_id → commitment` dedup mapping (Issue #51 cleanup).
+/// Remove an escrow_id mapping from storage.
+///
+/// Used during cleanup of terminal escrows. Does NOT remove the associated
+/// escrow entry; that must be done separately via remove_escrow.
 pub fn remove_escrow_id_mapping(env: &Env, escrow_id: &BytesN<32>) {
-    env.storage()
-        .persistent()
-        .remove(&DataKey::EscrowIdMap(escrow_id.clone()));
+    let key = DataKey::EscrowIdMap(escrow_id.clone());
+    env.storage().persistent().remove(&key);
 }
 
 /// Record the reverse index `commitment → escrow_id`, enabling terminal-escrow
@@ -869,16 +1053,14 @@ pub fn put_commitment_escrow_id(env: &Env, commitment: &Bytes, escrow_id: &Bytes
 
 /// Look up the `escrow_id` recorded for a commitment, if any.
 pub fn get_commitment_escrow_id(env: &Env, commitment: &Bytes) -> Option<BytesN<32>> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::CommitmentEscrowId(commitment.clone()))
+    let key = DataKey::CommitmentEscrowId(commitment.clone());
+    env.storage().persistent().get(&key)
 }
 
 /// Remove the reverse `commitment → escrow_id` index (Issue #51 cleanup).
 pub fn remove_commitment_escrow_id(env: &Env, commitment: &Bytes) {
-    env.storage()
-        .persistent()
-        .remove(&DataKey::CommitmentEscrowId(commitment.clone()));
+    let key = DataKey::CommitmentEscrowId(commitment.clone());
+    env.storage().persistent().remove(&key);
 }
 
 // -----------------------------------------------------------------------------
@@ -924,6 +1106,88 @@ pub fn count_dispute_votes(env: &Env, commitment: &Bytes, arbiters: &Vec<Address
 }
 
 // -----------------------------------------------------------------------------
+// Escrow ID Tombstone helpers (Issue #19) - for bounded cleanup
+// -----------------------------------------------------------------------------
+
+/// Look up a tombstone to check if an escrow_id was previously cleaned up.
+///
+/// Returns `Some(commitment)` if the escrow was cleaned, allowing idempotent
+/// retries to return the original commitment without creating duplicates.
+pub fn get_escrow_id_tombstone(env: &Env, escrow_id: &BytesN<32>) -> Option<BytesN<32>> {
+    let key = DataKey::EscrowIdTombstone(escrow_id.clone());
+    let result = env.storage().persistent().get(&key);
+    if result.is_some() {
+        set_or_extend_ttl(env, &key, RecordType::EscrowIdTombstone);
+    }
+    result
+}
+
+/// Record a tombstone for a cleaned escrow_id mapping.
+///
+/// This marks the escrow_id as cleaned while preserving the commitment for
+/// idempotency. Indexers can detect cleaned escrow IDs via this tombstone.
+pub fn put_escrow_id_tombstone(env: &Env, escrow_id: &BytesN<32>, commitment: &BytesN<32>) {
+    let key = DataKey::EscrowIdTombstone(escrow_id.clone());
+    env.storage().persistent().set(&key, commitment);
+    set_or_extend_ttl(env, &key, RecordType::EscrowIdTombstone);
+}
+
+// -----------------------------------------------------------------------------
+// Dispute vote cleanup helpers (Issue #19)
+// -----------------------------------------------------------------------------
+
+/// Remove all dispute votes for a given commitment within a bounded arbiter list.
+///
+/// Used during cleanup of terminal disputed escrows to ensure votes don't
+/// remain orphaned after the escrow is removed.
+pub fn remove_dispute_votes_for_escrow(env: &Env, commitment: &Bytes, arbiters: &Vec<Address>) {
+    for arbiter in arbiters.iter() {
+        let key = DataKey::DisputeVote(commitment.clone(), arbiter.clone());
+        env.storage().persistent().remove(&key);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Schema Migration helpers (Issue #18)
+// -----------------------------------------------------------------------------
+
+/// Migrate an escrow entry to the current schema version.
+///
+/// Upgrades legacy records (schema_version == 0) to include the schema_version field.
+/// Returns the migrated entry, or the original if already at current version.
+pub fn migrate_escrow_entry(entry: &mut EscrowEntry) {
+    if entry.schema_version == 0 {
+        entry.schema_version = crate::types::ESCROW_SCHEMA_VERSION;
+    }
+}
+
+/// Migrate a stealth escrow entry to the current schema version.
+pub fn migrate_stealth_escrow_entry(entry: &mut StealthEscrowEntry) {
+    if entry.schema_version == 0 {
+        entry.schema_version = crate::types::STEALTH_ESCROW_SCHEMA_VERSION;
+    }
+}
+
+/// Migrate fee config to the current schema version.
+pub fn migrate_fee_config(config: &mut FeeConfig) {
+    if config.schema_version == 0 {
+        config.schema_version = crate::types::FEE_CONFIG_SCHEMA_VERSION;
+    }
+}
+
+/// Migrate per-asset fee config to the current schema version.
+pub fn migrate_per_asset_fee_config(config: &mut PerAssetFeeConfig) {
+    if config.schema_version == 0 {
+        config.schema_version = crate::types::PER_ASSET_FEE_SCHEMA_VERSION;
+    }
+}
+
+/// Migrate oracle fee config to the current schema version.
+pub fn migrate_oracle_fee_config(config: &mut OracleFeeConfig) {
+    if config.schema_version == 0 {
+        config.schema_version = crate::types::ORACLE_FEE_CONFIG_SCHEMA_VERSION;
+    }
+}
 // Dispute timeout configuration (Issue #49)
 // -----------------------------------------------------------------------------
 

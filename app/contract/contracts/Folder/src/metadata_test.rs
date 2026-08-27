@@ -233,6 +233,7 @@ fn metadata_contract_health_reports_emergency_mode() {
     let (env, client) = setup();
     let admin = Address::generate(&env);
     client.initialize(&admin);
+    client.grant_role(&admin, &admin, &crate::types::Role::Governance);
 
     client.activate_emergency_mode(&admin);
 
@@ -247,6 +248,7 @@ fn metadata_contract_health_reports_upgrading() {
     let (env, client) = setup();
     let admin = Address::generate(&env);
     client.initialize(&admin);
+    client.grant_role(&admin, &admin, &crate::types::Role::Governance);
 
     let new_hash = BytesN::from_array(&env, &[0x01u8; 32]);
     env.ledger().set_timestamp(100);
@@ -297,6 +299,7 @@ fn metadata_upgrade_state_after_start_upgrade() {
     let (env, client) = setup();
     let admin = Address::generate(&env);
     client.initialize(&admin);
+    client.grant_role(&admin, &admin, &crate::types::Role::Governance);
 
     let new_hash = BytesN::from_array(&env, &[0x02u8; 32]);
     env.ledger().set_timestamp(100);
@@ -455,4 +458,11 @@ fn golden_supported_versions_schema_is_stable() {
     let _min_contract_version: u32 = versions.min_contract_version;
     let _min_event_schema_version: u32 = versions.min_event_schema_version;
     let _supported_event_versions: soroban_sdk::Vec<u32> = versions.supported_event_versions;
+}
+
+#[test]
+fn metadata_validate_event_schemas_succeeds() {
+    let (_env, client) = setup();
+    let valid = client.validate_event_schemas();
+    assert!(valid);
 }

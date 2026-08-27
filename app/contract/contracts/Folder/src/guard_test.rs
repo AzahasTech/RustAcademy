@@ -1,14 +1,13 @@
 use crate::{
     errors::RustAcademyError,
-    storage::{PauseFlag},
+    storage::PauseFlag,
+    types::Role,
     RustAcademyContract, RustAcademyContractClient,
 };
 
 use soroban_sdk::{
-    contract, contractimpl,
-    testutils::{Address as _, Events as _, Ledger as _},
-    token,
-    Address, Bytes, BytesN, Env, Symbol,
+    testutils::{Address as _, Ledger as _},
+    Address, Bytes, BytesN, Env,
 };
 
 /// Helper function to generate a test commitment
@@ -52,6 +51,135 @@ const GUARD_TEST_TABLE: &[GuardTestCase] = &[
         should_succeed: false,
     },
 ];
+
+// ─────────────────────────────────────────────────────────────────────────
+// Governance boundary tests
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Helper: set up a contract with admin + governance roles, and a valid upgrade window.
+fn setup_governance_contract(env: &Env) -> (Address, RustAcademyContractClient) {
+    let admin = Address::generate(env);
+    let contract_id = env.register(RustAcademyContract, ());
+    let client = RustAcademyContractClient::new(env, &contract_id);
+    client.initialize(&admin);
+    // Grant Governance role to admin
+    client.grant_role(&admin, &admin, &Role::Governance);
+    // Enable upgrade gate and set a valid window
+    client.set_upgrade_gate(&admin, &true);
+    let now = env.ledger().timestamp();
+    client.set_upgrade_window(&admin, &now, &(now + 3600));
+    (admin, client)
+}
+
+/// Emergency mode activation rejects Admin-only callers.
+#[test]
+fn test_emergency_mode_rejects_admin_without_governance() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let contract_id = env.register(RustAcademyContract, ());
+    let client = RustAcademyContractClient::new(&env, &contract_id);
+    client.initialize(&admin);
+    // Admin does NOT have Governance role
+
+    let res = client.try_activate_emergency_mode(&admin);
+    assert!(
+        matches!(res, Err(Ok(RustAcademyError::InsufficientRole))),
+        "Admin without Governance role must be rejected for emergency mode: {:?}",
+        res
+    );
+}
+
+/// Emergency mode activation succeeds with Governance role.
+#[test]
+fn test_emergency_mode_accepted_with_governance_role() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, client) = setup_governance_contract(&env);
+
+    let res = client.try_activate_emergency_mode(&admin);
+    assert!(res.is_ok(), "Governance role must be accepted for emergency mode: {:?}", res);
+}
+
+/// start_upgrade rejects Admin without Governance role.
+#[test]
+fn test_start_upgrade_rejects_admin_without_governance() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let contract_id = env.register(RustAcademyContract, ());
+    let client = RustAcademyContractClient::new(&env, &contract_id);
+    client.initialize(&admin);
+    client.set_upgrade_gate(&admin, &true);
+    let now = env.ledger().timestamp();
+    client.set_upgrade_window(&admin, &now, &(now + 3600));
+
+    let wasm_hash = BytesN::from_array(&env, &[0xbb; 32]);
+    let res = client.try_start_upgrade(&admin, &2, &wasm_hash);
+    assert!(
+        matches!(res, Err(Ok(RustAcademyError::InsufficientRole))),
+        "start_upgrade must require Governance role: {:?}",
+        res
+    );
+}
+
+/// set_upgrade_gate rejects Admin without Governance role.
+#[test]
+fn test_set_upgrade_gate_rejects_admin_without_governance() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let contract_id = env.register(RustAcademyContract, ());
+    let client = RustAcademyContractClient::new(&env, &contract_id);
+    client.initialize(&admin);
+
+    let res = client.try_set_upgrade_gate(&admin, &false);
+    assert!(
+        matches!(res, Err(Ok(RustAcademyError::InsufficientRole))),
+        "set_upgrade_gate must require Governance role: {:?}",
+        res
+    );
+}
+
+/// register_hook rejects callers without Admin role.
+#[test]
+fn test_register_hook_rejects_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let contract_id = env.register(RustAcademyContract, ());
+    let client = RustAcademyContractClient::new(&env, &contract_id);
+    client.initialize(&admin);
+
+    let nobody = Address::generate(&env);
+    let hook_addr = Address::generate(&env);
+    let res = client.try_register_hook(&nobody, &hook_addr);
+    assert!(
+        matches!(res, Err(Ok(RustAcademyError::InsufficientRole))),
+        "register_hook must reject non-admin caller: {:?}",
+        res
+    );
+}
+
+/// register_hook accepts Admin role.
+#[test]
+fn test_register_hook_accepts_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let contract_id = env.register(RustAcademyContract, ());
+    let client = RustAcademyContractClient::new(&env, &contract_id);
+    client.initialize(&admin);
+
+    let hook_addr = Address::generate(&env);
+    let res = client.try_register_hook(&admin, &hook_addr);
+    assert!(res.is_ok(), "register_hook must accept Admin: {:?}", res);
+}
 
 fn setup_initialized_contract(env: &Env) -> (Address, RustAcademyContractClient) {
     let admin = Address::generate(env);

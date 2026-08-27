@@ -175,11 +175,25 @@ stellar contract deploy \
 * Duplicate submission prevention
 * Reward throttling
 
-### Access Control
+### Access Control & Governance Boundaries
 
-* Admin-only functions
-* Tutor-only functions
-* Governance-controlled upgrades
+The contract enforces a three-tier authorization model to minimize privilege drift
+and prevent routine operational actions from accidentally triggering
+protocol-changing decisions:
+
+| Role          | Privilege Level | Scope |
+|---------------|----------------|-------|
+| **Governance** | Highest         | Protocol-changing decisions: emergency mode activation, upgrade lifecycle (`start_upgrade`, `upgrade`, `complete_upgrade`, `cancel_upgrade`), upgrade window and gate configuration |
+| **Admin**      | High            | Routine admin operations: pause/unpause, role management, fee configuration, platform wallet, hook registration, fee collector rotation |
+| **Operator**   | Moderate        | Day-to-day operational tasks: pause flags, fee configuration |
+
+**Key invariants:**
+- Admin-only actions require `Role::Admin` and do not rely on ambient or stale authority state.
+- Governance-specific flows are isolated from routine operational paths and are easier to audit.
+- Emergency mode activation is irreversible and requires Governance-level authority only.
+- Upgrade lifecycle is gated behind the Governance role to enforce dual-control.
+- Hook registration is admin-gated to prevent unauthorized callback injection.
+- Security tests validate role checks for normal admin, governance, and unauthorized user paths.
 
 ### Financial Safety
 
@@ -192,38 +206,173 @@ stellar contract deploy \
 
 ## Events
 
-### Reward Released
+All events emitted by the `Folder` contract follow canonical schema definitions (`EVENT_SCHEMAS`) with stable event type IDs (`ETID_*`) and deterministic replay fields (`EVENT_REPLAY_FIELDS`: `event_type_id`, `ledger_sequence`, `schema_version`, `timestamp`).
+
+The contract enforces full runtime schema validation (`validate_event_schemas`) to guarantee:
+- Uniqueness of event names and numeric event type IDs.
+- Valid domain topic namespaces (`TOPIC_ADMIN`, `TOPIC_DISPUTE`, `TOPIC_ESCROW`, `TOPIC_PRIVACY`, `TOPIC_STEALTH`).
+- Alphabetically sorted payload keys without duplicates.
+- Presence of all required replay fields.
+- Runtime cross-checking of all emitted events against `EVENT_SCHEMAS`.
+
+### Event Deduplication & Pre-Publish Validation (Issue #560)
+
+The contract provides two layers of protection against malformed payloads, duplicate events, and schema drift:
+
+#### 1. Pre-Publish Validation (`validate_emission_preconditions`)
+
+Before any event is published, `validate_emission_preconditions` validates:
+- The event type ID is non-zero and matches a registered schema.
+- The schema version matches the current `EVENT_SCHEMA_VERSION` (prevents schema drift).
+- The domain namespace is valid (`TOPIC_ADMIN`, `TOPIC_ESCROW`, etc.).
+- The event is not a duplicate of a previously emitted event.
+
+#### 2. Deterministic Event Deduplication
+
+Every emission is recorded in persistent storage using a 32-byte SHA-256 key derived from the core replay fields: `(event_type_id, ledger_sequence, schema_version, timestamp)`. This provides:
+
+- **At-most-once delivery**: identical replay field tuples are rejected.
+- **TTL-based expiry**: dedup entries expire after 6 months of ledgers, preventing unbounded storage growth.
+- **Cross-field sensitivity**: any change to any replay field produces a fresh dedup key.
 
 ```rust
-(
-  "reward_released",
-  learner
-)
+// Example: check and record in a single call
+let is_fresh = events::check_and_record_event_dedup(
+    &env, event_type_id, ledger_sequence, schema_version, timestamp
+)?;
+if !is_fresh {
+    return Err(RustAcademyError::DuplicateEvent);
+}
 ```
 
-### Certificate Minted
+#### API Reference
+
+| Function | Purpose |
+|----------|---------|
+| `validate_emission_preconditions(env, etid, version, ledger, ts)` | Full pre-publish check: schema lookup + namespace + dedup. |
+| `check_and_record_event_dedup(env, etid, ledger, version, ts)` | Atomic check-and-record for event deduplication. |
+| `compute_event_dedup_key(env, etid, ledger, version, ts)` | Derive the 32-byte dedup key from replay fields. |
+| `check_event_dedup(env, key)` | Check whether a dedup key has been recorded. |
+| `record_event_emission(env, key)` | Record a dedup key with 6-month TTL. |
+
+---
+
+## Fee Configuration (Fee Router v2 — Issue #305)
+
+The contract supports flexible, multi-tier fee configuration with global defaults and per-asset overrides.
+
+> **📖 For detailed examples and patterns, see [FEE_CONFIGURATION_GUIDE.md](./FEE_CONFIGURATION_GUIDE.md).**
+
+### Fee Resolution Priority
+
+Fees are resolved in the following priority order:
+
+1. **Per-asset override** — If configured for a specific token, uses that fee immediately
+2. **Oracle dynamic pricing** — If oracle is configured and price is fresh, uses USD-based fee
+3. **Global static config** — Falls back to global basis points setting
+
+### Global Fee Configuration
+
+Set a global fee that applies to all tokens unless overridden:
 
 ```rust
-(
-  "certificate_minted",
-  learner
-)
+// Set global fee to 2% (200 basis points)
+client.set_fee_config(
+    &admin,
+    &FeeConfig {
+        fee_bps: 200,
+        schema_version: FEE_CONFIG_SCHEMA_VERSION,
+    },
+)?;
 ```
 
-### Reputation Updated
+### Per-Asset Fee Overrides
+
+Override the global fee for specific tokens with per-asset configuration:
 
 ```rust
-(
-  "reputation_updated",
-  account
-)
+// Set XLM fee to 1% (100 bps), with 20% arbiter split
+client.set_per_asset_fee(
+    &admin,
+    &xlm_token,
+    &PerAssetFeeConfig {
+        fee_bps: 100,                  // 1% fee for XLM
+        arbiter_bps: 2000,             // 20% of fee goes to arbiter
+        arbiter_fee: FeeRatio::default(),    // Optional explicit split
+        platform_fee: FeeRatio::default(),
+        collector_fee: FeeRatio::default(),
+        schema_version: PER_ASSET_FEE_SCHEMA_VERSION,
+    },
+)?;
 ```
+
+### Explicit Fee Distribution
+
+Use explicit `FeeRatio` prescaling for precise fee splits:
+
+```rust
+// Split fee into exact portions: 40% arbiter, 30% platform, 30% collector
+client.set_per_asset_fee(
+    &admin,
+    &token,
+    &PerAssetFeeConfig {
+        fee_bps: 500,                  // Total 5% fee
+        arbiter_bps: 0,                // Legacy split disabled
+        arbiter_fee: FeeRatio { numerator: 2, denominator: 5 },    // 40%
+        platform_fee: FeeRatio { numerator: 3, denominator: 10 },  // 30%
+        collector_fee: FeeRatio { numerator: 3, denominator: 10 }, // 30%
+        schema_version: PER_ASSET_FEE_SCHEMA_VERSION,
+    },
+)?;
+```
+
+### Query Per-Asset Fees
+
+```rust
+// Get per-asset fee config for a specific token
+let config = client.get_per_asset_fee(&token);
+
+// Returns Option<PerAssetFeeConfig>
+// None = use global config or oracle pricing
+// Some(config) = use this token-specific config
+```
+
+### Fee Routing Breakdown
+
+When routing payouts with fees, the breakdown is returned:
+
+```rust
+FeeBreakdown {
+    net_payout: i128,      // Amount recipient receives
+    total_fee: i128,       // Total fee collected
+    arbiter_fee: i128,     // Portion paid to arbiter (if applicable)
+    platform_fee: i128,    // Portion paid to platform
+    collector_fee: i128,   // Portion paid to fee collector
+}
+```
+
+Example: amount=10,000, fee_bps=200 (2%), arbiter_bps=2000 (20% of fee):
+- Total fee: 200
+- Arbiter portion: 40 (20% of fee)
+- Collector portion: 160 (80% of fee)
+- Net to recipient: 9,800
+
+### Collector Rotation
+
+Update the fee collector address without disrupting existing escrows:
+
+```rust
+// Rotate to a new collector; old escrows use new collector at settlement
+let new_index = client.rotate_collector(&admin, &new_collector_address)?;
+```
+
+All subsequent payouts will route fees to the new collector. Existing escrows automatically use the new collector when they're spent or refunded.
 
 ---
 
 ## Metadata API
 
-The `Folder` contract exposes a stable, read-only metadata surface for tooling, backends, and indexers (Issue #50). All calls are non-mutating and require no authorization.
+The `Folder` contract exposes a stable, read-only metadata surface for tooling, backends, and indexers (Issue #50, Issue #312). All calls are non-mutating and require no authorization.
 
 | Method | Purpose |
 |--------|---------|
@@ -233,9 +382,19 @@ The `Folder` contract exposes a stable, read-only metadata surface for tooling, 
 | `get_upgrade_state()` | Upgrade window and in-progress state. |
 | `get_supported_versions()` | Supported contract and event schema version ranges. |
 | `check_schema_compatibility(contract_version, event_schema_version)` | Whether a caller-supplied version pair is compatible. |
+| `validate_event_schemas()` | Validate all static `EVENT_SCHEMAS` definitions against canonical schema rules. |
 | `get_pause_flags()` | Granular pause bitmask. |
 
 Tooling should call `check_schema_compatibility` before sending writes to avoid version mismatches.
+
+## Operational & Emergency Recovery Guides
+
+For detailed operational procedures, upgrade safety gates, fee routing, and emergency mitigation:
+- [Emergency Recovery Playbook](file:///Users/m-ibinola/.gemini/antigravity/scratch/RustAcademy/app/contract/documentation/EMERGENCY_RECOVERY_PLAYBOOK.md)
+- [Fee Configuration Guide](file:///Users/m-ibinola/.gemini/antigravity/scratch/RustAcademy/app/contract/FEE_CONFIGURATION_GUIDE.md)
+- [Upgrade Safety Gate Quick Reference](file:///Users/m-ibinola/.gemini/antigravity/scratch/RustAcademy/app/contract/UPGRADE_SAFETY_GATE_QUICK_REFERENCE.md)
+- [Upgrade Safety Gate Implementation](file:///Users/m-ibinola/.gemini/antigravity/scratch/RustAcademy/app/contract/UPGRADE_SAFETY_GATE_IMPLEMENTATION.md)
+- [Deployment Playbook](file:///Users/m-ibinola/.gemini/antigravity/scratch/RustAcademy/app/contract/documentation/deployment-playbook.md)
 
 ## Testing Requirements
 
@@ -246,5 +405,19 @@ All contracts must maintain:
 ```
 
 before deployment to production.
+
+### Storage TTL is not a coverage substitute
+
+Persistent-entry TTL (storage rent/expiry) is tracked in **ledger sequence
+numbers**, not timestamps — advancing `env.ledger().set_timestamp(..)` in a
+test has no effect on it. Use `env.ledger().set_sequence_number(..)` (or the
+`storage::ttl_test_utils` helpers in the Folder contract) instead.
+
+The local Soroban test sandbox also does not evict expired persistent
+entries the way a live network would: reading an entry after its TTL has
+lapsed silently auto-restores it to a minimum floor rather than erroring or
+removing it. A test asserting a record `is_some()` after "aging" the ledger
+proves nothing about TTL either way — it passes whether or not the TTL logic
+works. Assert on the actual TTL value (`get_ttl()`) instead.
 
 ---

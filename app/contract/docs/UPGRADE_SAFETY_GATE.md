@@ -1,6 +1,6 @@
 # Upgrade Safety Gate & Post-Upgrade Invariants
 
-**Issue #432** | Wave 5 – Lifecycle Management
+**Issue #432 + #318** | Wave 5 – Lifecycle Management
 
 ## Overview
 
@@ -9,14 +9,16 @@ This document describes the contract-level safeguards and invariant enforcement 
 ### Key Features
 
 1. **Explicit Upgrade Windows** – Upgrades only occur during admin-configured time windows
-2. **Post-Upgrade Invariants** – Deterministic checks validate state after migration
-3. **Upgrade Lifecycle Events** – `UpgradeStarted` and `UpgradeCompleted` for indexer tracking
-4. **In-Progress Flag** – Prevents concurrent upgrade attempts
-5. **Admin-Controlled Gating** – Only admins can set windows and control upgrades
+2. **Upgrade Gate Master Switch** – Admin can enable/disable all upgrades globally (Issue #318)
+3. **Post-Upgrade Invariants** – Deterministic checks validate state after migration
+4. **Upgrade Lifecycle Events** – `UpgradeStarted` and `UpgradeCompleted` for indexer tracking
+5. **In-Progress Flag** – Prevents concurrent upgrade attempts
+6. **Admin-Controlled Gating** – Only admins can set windows and control upgrades
+7. **Safety Check View** – `check_upgrade_safety()` provides pre-upgrade validation (Issue #318)
 
 ---
 
-## Storage Schema (Issue #432)
+## Storage Schema (Issue #432 + #318)
 
 New storage keys added to `DataKey` enum:
 
@@ -25,10 +27,29 @@ New storage keys added to `DataKey` enum:
 | `UpgradeWindowStart` | u64  | Ledger timestamp when upgrades become allowed                 |
 | `UpgradeWindowEnd`   | u64  | Ledger timestamp when upgrades become blocked (0 = unbounded) |
 | `UpgradeInProgress`  | bool | Flag: upgrade currently in-flight                             |
+| `UpgradeGateEnabled` | bool | Master switch: when false, all upgrades are blocked (default true) |
 
 ---
 
 ## Upgrade Workflow
+
+### Step 0: Configure the Upgrade Gate (Issue #318)
+
+```rust
+set_upgrade_gate(env, caller, enabled)
+```
+
+- **enabled**: `true` to allow upgrades (default), `false` to block all upgrades
+- **Requirements**: Caller must be admin
+
+The gate is a master switch that overrides the upgrade window. When disabled, `start_upgrade` is blocked regardless of window configuration. Useful for emergency lockdowns or staged rollouts.
+
+**Example**:
+
+```rust
+admin_account.set_upgrade_gate(contract, false)?;  // Lock down upgrades
+admin_account.set_upgrade_gate(contract, true)?;   // Re-enable upgrades
+```
 
 ### Step 1: Admin Sets Upgrade Window
 
@@ -118,6 +139,45 @@ complete_upgrade(env, caller, new_version)
 admin_account.complete_upgrade(contract, 2u32)?;
 // → UpgradeCompleted event emitted
 // → Invariants checked; panics if violated
+```
+
+---
+
+## Safety Check View (Issue #318)
+
+### check_upgrade_safety()
+
+Returns an [`UpgradeSafetyReport`] with the full breakdown of upgrade preconditions:
+
+```rust
+let report = client.check_upgrade_safety();
+assert!(report.is_safe, "upgrade should be safe");
+assert!(report.gate_enabled, "gate must be enabled");
+assert!(report.window_active, "window must be active");
+assert!(!report.upgrade_in_progress, "no upgrade in progress");
+assert!(report.version_compatible, "version must be in range");
+assert!(report.invariants_satisfied, "fee invariants must hold");
+```
+
+### UpgradeSafetyReport Fields
+
+| Field                 | Type  | Description                                             |
+| --------------------- | ----- | ------------------------------------------------------- |
+| `is_safe`             | bool  | Overall safety: true only when all checks pass          |
+| `gate_enabled`        | bool  | Whether the master switch is enabled                    |
+| `window_active`       | bool  | Whether the current time falls within the window        |
+| `upgrade_in_progress` | bool  | Whether an upgrade is already in-flight                 |
+| `version_compatible`  | bool  | Whether the contract version is within supported range  |
+| `invariants_satisfied`| bool  | Whether critical pre-upgrade invariants hold            |
+
+### get_upgrade_status()
+
+Returns the complete [`UpgradeState`] including the `gate_enabled` field:
+
+```rust
+let status = client.get_upgrade_status();
+assert!(status.gate_enabled);
+assert!(!status.in_progress);
 ```
 
 ---
@@ -325,6 +385,33 @@ Tests included:
 5. **`upgrade_safety_gate_non_admin_blocked`**
    - Verifies only admins can gate/start upgrades
 
+6. **`upgrade_safety_gate_blocks_when_gate_disabled`** (Issue #318)
+   - Verifies gate master switch blocks upgrades when disabled
+
+7. **`upgrade_safety_gate_succeeds_when_gate_enabled`** (Issue #318)
+   - Verifies upgrades succeed when gate is explicitly enabled
+
+8. **`upgrade_safety_gate_check_upgrade_safety_reports_version`** (Issue #318)
+   - Verifies check_upgrade_safety returns correct report
+
+9. **`upgrade_safety_gate_check_reports_unsafe_*`** (Issue #318, 4 tests)
+   - Verifies safety report is unsafe for: disabled gate, no window, in-progress, invariant violation
+
+10. **`upgrade_safety_gate_get_upgrade_status_includes_gate_enabled`** (Issue #318)
+    - Verifies get_upgrade_status returns gate_enabled field
+
+11. **`upgrade_safety_gate_non_admin_cannot_set_gate`** (Issue #318)
+    - Verifies admin-only enforcement on set_upgrade_gate
+
+12. **`upgrade_safety_gate_toggle_preserves_contract_state`** (Issue #318)
+    - Regression: gate toggle does not corrupt escrow/fee/privacy state
+
+13. **`upgrade_safety_gate_full_lifecycle`** (Issue #318)
+    - End-to-end: enabled → disabled → re-enabled → upgrade
+
+14. **`upgrade_safety_gate_migrate_works_independently_of_gate`** (Issue #318)
+    - Verifies migrate() works regardless of gate setting
+
 ### Integration Tests
 
 When deployed on-chain:
@@ -342,6 +429,7 @@ When deployed on-chain:
 When upgrading between contract versions:
 
 - [ ] Generate new WASM hash: `soroban contract build` → SHA256
+- [ ] Verify upgrade gate is enabled: `check_upgrade_safety()` returns `is_safe = true`
 - [ ] Admin calls `set_upgrade_window(start, end)` during maintenance window
 - [ ] Admin calls `start_upgrade(new_version)`
 - [ ] Deployment service uploads WASM
@@ -355,6 +443,9 @@ When upgrading between contract versions:
 ---
 
 ## FAQ
+
+**Q: What's the difference between `set_upgrade_gate(false)` and not setting a window?**
+A: Both block upgrades, but for different reasons. No window set (`start = 0`) means the upgrade window hasn't been configured. Gate disabled (`set_upgrade_gate(false)`) is an explicit admin override that blocks upgrades even when a window is active. Use the gate for emergency lockdowns; use the window for scheduled maintenance.
 
 **Q: Can I call `migrate()` without `start_upgrade()`?**
 A: Yes. `migrate()` is standalone and always allowed. `start_upgrade()` / `complete_upgrade()` add extra gating for safety but are optional for ad-hoc migrations.
@@ -376,6 +467,7 @@ A: Look for `UpgradeStarted` events without a corresponding `UpgradeCompleted` i
 ## Related Issues
 
 - **#310**: Upgrade simulation test harness (foundational)
+- **#318**: Upgrade gate master switch + migration regression coverage
 - **#432**: Upgrade safety gate + invariants (this issue)
 - **#157**: Privacy v2 (uses similar event patterns)
 - **#305**: Fee Router v2 (affected by fee invariant bounds)
