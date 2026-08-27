@@ -522,14 +522,12 @@ describe('HintService', () => {
     it('learner progresses through tiers as they attempt the challenge', () => {
       setupAccessibleUser('alice', 'rust-101', 'rust-course');
       addAllTierHints('rust-101');
+      service.setCooldownMs(0);
 
       // 0 attempts → nudge
       const r1 = service.getHint('rust-101', 'alice', { attemptCount: 0 });
       expect(r1.tier).toBe(HintDifficultyTier.Nudge);
       expect(r1.isFallback).toBe(false);
-
-      // Wait out cooldown (set to 0 for test speed)
-      service.setCooldownMs(0);
 
       // 1 attempt → suggestion
       const r2 = service.getHint('rust-101', 'alice', { attemptCount: 1 });
