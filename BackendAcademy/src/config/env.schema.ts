@@ -315,6 +315,31 @@ export const baseEnvSchema = Joi.object({
     .default(0.7)
     .description('Sampling temperature for AI responses'),
 
+  // ── BA-078: AI provider retry policy ────────────────────────
+  /** Maximum retry attempts for transient AI provider failures (429/5xx). */
+  AI_RETRY_MAX_ATTEMPTS: Joi.number()
+    .integer()
+    .min(0)
+    .max(10)
+    .default(3)
+    .description('Maximum retry attempts after a transient AI provider failure.'),
+
+  /** Base backoff delay in ms before the first AI provider retry. */
+  AI_RETRY_BASE_DELAY_MS: Joi.number()
+    .integer()
+    .min(0)
+    .max(60_000)
+    .default(250)
+    .description('Base exponential-backoff delay in ms for AI provider retries.'),
+
+  /** Upper bound in ms for AI provider retry backoff. */
+  AI_RETRY_MAX_DELAY_MS: Joi.number()
+    .integer()
+    .min(1)
+    .max(300_000)
+    .default(5_000)
+    .description('Maximum backoff delay in ms for AI provider retries.'),
+
   /** Version identifier for the active chat prompt template set (#374). */
   AI_PROMPT_TEMPLATE_VERSION: Joi.string()
     .pattern(/^\d+\.\d+\.\d+$/)
