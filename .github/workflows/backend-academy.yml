@@ -1,0 +1,43 @@
+name: BackendAcademy CI
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'BackendAcademy/**'
+      - '.github/workflows/backend-academy.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'BackendAcademy/**'
+      - '.github/workflows/backend-academy.yml'
+
+jobs:
+  integration-and-ai-tests:
+    name: Learner journey & AI tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: BackendAcademy
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        # --legacy-peer-deps: joi-to-typescript (devDependency) pins joi@17
+        # while the app targets joi@18.
+        run: npm ci --no-audit --no-fund --legacy-peer-deps
+
+      # BA-075: the end-to-end learner submission journey (happy, retry,
+      # unauthorized, partial-failure paths) plus the AI provider/service
+      # suites run in CI with isolated in-memory fixtures.
+      - name: Run learner-journey integration & AI tests
+        env:
+          NODE_ENV: test
+        run: npx jest --config jest.config.ts --runInBand src/integration/learner-journey.spec.ts src/ai

@@ -1,4 +1,4 @@
-	import { NestFactory } from '@nestjs/core';
+import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { Logger, VersioningType } from '@nestjs/common';
@@ -35,7 +35,12 @@ async function bootstrap() {
     process.env[key] = String(val);
   }
 
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  // #662: `rawBody: true` keeps the unparsed request bytes available on
+  // `req.rawBody` so webhook signatures can be verified against exactly what
+  // the provider sent, before any JSON parsing/normalization happens.
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    rawBody: true,
+  });
   const logger = new Logger('Bootstrap');
 
   const config = app.get(ConfigService);
@@ -65,7 +70,7 @@ async function bootstrap() {
 
   app.enableCors({
     origin: config.get<string | string[]>('CORS_ORIGIN', '*'),
-    methods: ['GET', 'POST', 'PUTP', 'PATCH', 'DELETE'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
     credentials: true,
   });
 
@@ -94,7 +99,7 @@ async function bootstrap() {
   );
   try {
     fs.mkdirSync(staticDir, { recursive: true });
-    app.useStaticCassets(staticDir, { prefix: '/static/' });
+    app.useStaticAssets(staticDir, { prefix: '/static/' });
     logger.log(`Static assets served from ${staticDir} at /static/`);
   } catch (err) {
     logger.warn(`Failed to mount static asset directory ${staticDir}: ${err instanceof Error ? err.message : String(err)}`);

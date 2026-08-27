@@ -17,6 +17,12 @@ import { IContractAdapter } from '../contracts';
  * payment events are recorded on-chain for auditability. When it is
  * not available (e.g., test environments), the service operates
  * in off-chain-only mode.
+ *
+ * #665: Dependencies are declared once in the constructor. `DatabaseService`
+ * is required; `IContractAdapter` and `ConfigService` are optional so the
+ * service can be instantiated in unit tests with just the required
+ * collaborator. Webhook delivery tuning values are read from config with
+ * safe defaults (see constructor).
  */
 export interface WebhookPayload {
   id: string;
@@ -32,8 +38,7 @@ export interface WebhookPayload {
  * callback. `eventId` is the provider's identifier for *this specific*
  * event delivery — it is expected to differ across retries in some
  * provider implementations, which is exactly why state validation cannot
- * rely on idempotency-key replay detection alone (see
- * DatabaseService.updatePaymentStatus) — Issue #412 follow-up.
+ * rely on idempotency-key replay detection alone.
  */
 export interface PaymentWebhookEvent {
   eventId: string;
@@ -53,6 +58,15 @@ export type WebhookProcessingOutcome =
   | { outcome: 'noop'; paymentId: string; reason: string }
   | { outcome: 'rejected'; paymentId: string; reason: string };
 
+/**
+ * Payments service.
+ *
+ * #396: On-chain payment recording is isolated behind the
+ * {@link IContractAdapter} interface. When the adapter is available,
+ * payment events are recorded on-chain for auditability. When it is
+ * not available (e.g., test environments), the service operates
+ * in off-chain-only mode.
+ */
 @Injectable()
 export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
@@ -111,6 +125,13 @@ export class PaymentsService {
   private static readonly MAX_LIMIT = 100;
   private static readonly DEFAULT_LIMIT = 20;
 
+  /** Default outgoing request timeout in ms. */
+  private readonly defaultTimeoutMs: number;
+  /** Maximum webhook delivery attempts (Issue #412). */
+  private readonly webhookMaxRetries: number;
+  /** Base backoff for webhook retries (Issue #412). */
+  private readonly webhookBaseBackoffMs: number;
+  /** Cap for webhook retry backoff (Issue #412). */
   private readonly defaultTimeoutMs: number;
   private readonly webhookMaxRetries: number;
   private readonly webhookBaseBackoffMs: number;
@@ -118,21 +139,30 @@ export class PaymentsService {
 
   constructor(
     private readonly databaseService: DatabaseService,
+    private readonly configService?: ConfigService,
     @Optional()
     private readonly contractAdapter?: IContractAdapter,
     @Optional()
     private readonly configService?: ConfigService,
   ) {
-    this.defaultTimeoutMs = this.configService?.get<number>('DEFAULT_REQUEST_TIMEOUT_MS') ?? 30_000;
-    this.webhookMaxRetries = this.configService?.get<number>('WEBHOOK_MAX_RETRIES') ?? 5;
-    this.webhookBaseBackoffMs = this.configService?.get<number>('WEBHOOK_BASE_BACKOFF_MS') ?? 1_000;
-    this.webhookMaxBackoffMs = this.configService?.get<number>('WEBHOOK_MAX_BACKOFF_MS') ?? 60_000;
+    this.defaultTimeoutMs =
+      this.configService?.get<number>('DEFAULT_REQUEST_TIMEOUT_MS') ?? 30_000;
+    this.webhookMaxRetries =
+      this.configService?.get<number>('WEBHOOK_MAX_RETRIES') ?? 5;
+    this.webhookBaseBackoffMs =
+      this.configService?.get<number>('WEBHOOK_BASE_BACKOFF_MS') ?? 1_000;
+    this.webhookMaxBackoffMs =
+      this.configService?.get<number>('WEBHOOK_MAX_BACKOFF_MS') ?? 60_000;
   }
 
   /**
    * Executes a fetch with a global timeout policy.
    */
-  async fetchWithTimeout(url: string, init?: RequestInit, timeoutMs?: number): Promise<Response> {
+  async fetchWithTimeout(
+    url: string,
+    init?: RequestInit,
+    timeoutMs?: number,
+  ): Promise<Response> {
     const timeout = timeoutMs ?? this.defaultTimeoutMs;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
@@ -258,10 +288,37 @@ export class PaymentsService {
    */
   async deliverWebhookWithRetry(
     webhook: WebhookPayload,
-    deliverFn: (url: string, body: string, headers: Record<string, string>) => Promise<number>,
+    deliverFn: (
+      url: string,
+      body: string,
+      headers: Record<string, string>,
+    ) => Promise<number>,
   ): Promise<{ success: boolean; attempts: number; lastError?: string }> {
     await this.enqueueWebhook(webhook);
     let record = await this.databaseService.getWebhookOutboxRecord(webhook.id);
+    let lastError: string | undefined;
+    for (let attempt = 1; attempt <= webhook.maxRetries; attempt++) {
+      try {
+        const headers: Record<string, string> = {
+          'X-Webhook-Signature': webhook.signature,
+          'X-Idempotency-Key': webhook.idempotencyKey,
+          'X-Webhook-Attempt': String(attempt),
+        };
+        const correlationId = CorrelationLoggerService.getCorrelationId();
+        if (correlationId) {
+          headers['x-correlation-id'] = correlationId;
+        }
+        const statusCode = await deliverFn(webhook.url, webhook.body, headers);
+        if (statusCode >= 200 && statusCode < 300) {
+          this.logger.log(
+            `Webhook ${webhook.id} delivered on attempt ${attempt}`,
+          );
+          return { success: true, attempts: attempt };
+        }
+        lastError = `HTTP ${statusCode}`;
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+      }
 
     // Drive the delivery to a terminal state through the durable outbox,
     // honouring the exponential-backoff schedule stored on the record.
@@ -325,7 +382,9 @@ export class PaymentsService {
     return Math.floor(jitter);
   }
 
-  getTransactionHistory(query: TransactionHistoryQueryDto): TransactionHistoryResponse {
+  getTransactionHistory(
+    query: TransactionHistoryQueryDto,
+  ): TransactionHistoryResponse {
     const { account, limit, cursor } = query;
 
     let filtered = [...this.stubLedger];
@@ -357,7 +416,12 @@ export class PaymentsService {
   }
 
   async applyCoupon(code: string, userId: string, amount: number, orderId: string) {
-    const result = await this.databaseService.applyCoupon(code, userId, amount, orderId);
+    const result = await this.databaseService.applyCoupon(
+      code,
+      userId,
+      amount,
+      orderId,
+    );
 
     // ── #396: Record payment on-chain via contract adapter ──────────
     if (this.contractAdapter) {
@@ -388,22 +452,81 @@ export class PaymentsService {
   }
 
   /**
+   * Validates that a provider callback matches the stored payment for
+   * `orderId`, `userId`, `amount`, `assetCode`, and `provider` (BA-096).
+   *
+   * A payment is only allowed to change status when every business field in
+   * the callback agrees with what we already recorded for that payment. Any
+   * mismatch is rejected *and* audited via the log, and no side effect runs
+   * for the offending event. Exceptions: when the payment is brand new
+   * (first callback) it is seeded from the event itself, which is the only
+   * legitimate divergence path.
+   */
+  verifyEventMatchesPayment(
+    event: PaymentWebhookEvent,
+    stored: {
+      orderId: string;
+      userId: string;
+      amount: number;
+      assetCode: string;
+      provider: string;
+    },
+  ): { valid: true } | { valid: false; mismatches: string[] } {
+    const mismatches: string[] = [];
+    if (event.orderId !== stored.orderId) {
+      mismatches.push(
+        `orderId (event=${event.orderId}, stored=${stored.orderId})`,
+      );
+    }
+    if (event.userId !== stored.userId) {
+      mismatches.push(
+        `userId (event=${event.userId}, stored=${stored.userId})`,
+      );
+    }
+    if (event.assetCode !== stored.assetCode) {
+      mismatches.push(
+        `assetCode (event=${event.assetCode}, stored=${stored.assetCode})`,
+      );
+    }
+    if (event.provider !== stored.provider) {
+      mismatches.push(
+        `provider (event=${event.provider}, stored=${stored.provider})`,
+      );
+    }
+    if (Math.abs(event.amount - stored.amount) > 1e-9) {
+      mismatches.push(
+        `amount (event=${event.amount}, stored=${stored.amount})`,
+      );
+    }
+    return mismatches.length === 0
+      ? { valid: true }
+      : { valid: false, mismatches };
+  }
+
+  /**
    * Processes a validated, signature-checked payment webhook event.
    *
-   * Issue #412 follow-up: this is the single choke point where a provider
-   * callback is allowed to mutate payment state. It never applies the
-   * caller's claimed status directly — it always defers to
-   * DatabaseService.updatePaymentStatus, which re-checks the payment's
-   * *current* stored status against the legal-transition graph. Duplicate
-   * callbacks (same event id, or a callback that would just repeat the
-   * current status) are recognized and short-circuited before any side
-   * effect (like granting a coupon redemption) runs, and illegal
-   * transitions (e.g. `succeeded` -> `pending`, or mutating a payment that
-   * already resolved to `failed`/`refunded`) are rejected outright.
+   * Two independent safeguards protect payment state here:
+   *
+   * 1. BA-096 (identity + amount consistency): before any status transition
+   *    is attempted, {@link verifyEventMatchesPayment} checks that the
+   *    callback's `orderId`, `userId`, `amount`, `assetCode`, and `provider`
+   *    match the stored payment. Mismatches are rejected and audited.
+   *
+   * 2. Issue #412 follow-up: it never applies the caller's claimed status
+   *    directly — it always defers to DatabaseService.updatePaymentStatus,
+   *    which re-checks the payment's *current* stored status against the
+   *    legal-transition graph. Duplicate callbacks (same event id, or a
+   *    callback that would just repeat the current status) are recognized
+   *    and short-circuited before any side effect (like granting a coupon
+   *    redemption) runs, and illegal transitions are rejected outright.
    */
-  async processPaymentWebhookEvent(event: PaymentWebhookEvent): Promise<WebhookProcessingOutcome> {
-    // Ensure the payment row exists (first callback for a payment creates it
-    // in `pending`; this is a no-op for payments we already know about).
+  async processPaymentWebhookEvent(
+    event: PaymentWebhookEvent,
+  ): Promise<WebhookProcessingOutcome> {
+    // Ensure the payment row exists. The first callback for a payment seeds
+    // it in `pending` using the event's own identity fields (this is the
+    // sole legitimate case where event fields define the stored payment).
     const existing = await this.databaseService.getPaymentById(event.paymentId);
     if (!existing) {
       await this.databaseService.createPayment({
@@ -415,6 +538,29 @@ export class PaymentsService {
         assetCode: event.assetCode,
         provider: event.provider,
       });
+    } else {
+      // The payment already exists — the callback's identity fields MUST
+      // agree with what we stored, otherwise the callback is rejected and
+      // audited before any state mutation (BA-096).
+      const match = this.verifyEventMatchesPayment(event, {
+        orderId: existing.orderId,
+        userId: existing.userId,
+        amount: existing.amount,
+        assetCode: existing.assetCode,
+        provider: existing.provider,
+      });
+
+      if (!match.valid) {
+        const reason = `Payment ${event.paymentId}: mismatched callback fields: ${match.mismatches.join(', ')}`;
+        this.logger.warn(
+          `Rejected webhook event ${event.eventId} (identity/amount mismatch): ${reason}`,
+        );
+        return {
+          outcome: 'rejected',
+          paymentId: event.paymentId,
+          reason,
+        };
+      }
     }
 
     const result = await this.databaseService.updatePaymentStatus(

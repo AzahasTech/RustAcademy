@@ -243,13 +243,28 @@ export class SecurityService {
 
   /**
    * Verifies an HMAC-SHA256 webhook signature using timing-safe comparison.
+   *
+   * #662: webhook signatures MUST be verified against the raw request bytes
+   * before the body is parsed or normalized, otherwise any transport-level
+   * transformation (whitespace, key reordering, charset conversion) silently
+   * invalidates — or worse, bypasses — the signature check. This method
+   * operates on a `Buffer` so callers can pass `req.rawBody` untouched.
    */
-  verifyWebhookSignature(payload: string, signature: string, secret: string): boolean {
-    const expected = this.signWebhookPayload(payload, secret);
+  verifyWebhookSignatureRaw(body: Buffer, signature: string, secret: string): boolean {
+    const expected = createHmac('sha256', secret).update(body).digest('hex');
     const sigBuffer = Buffer.from(signature, 'hex');
     const expectedBuffer = Buffer.from(expected, 'hex');
     if (sigBuffer.length !== expectedBuffer.length) return false;
     return timingSafeEqual(sigBuffer, expectedBuffer);
+  }
+
+  /**
+   * Verifies an HMAC-SHA256 webhook signature over a string payload using
+   * timing-safe comparison. Prefer {@link verifyWebhookSignatureRaw} when the
+   * raw request bytes are available.
+   */
+  verifyWebhookSignature(payload: string, signature: string, secret: string): boolean {
+    return this.verifyWebhookSignatureRaw(Buffer.from(payload, 'utf8'), signature, secret);
   }
 
   /**
