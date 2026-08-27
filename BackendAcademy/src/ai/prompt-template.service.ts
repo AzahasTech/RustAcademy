@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { readFileSync, existsSync } from 'fs';
-import { resolve } from 'path';
+import { isAbsolute, relative, resolve, sep } from 'path';
 
 /**
  * Approval metadata recorded for a prompt template version.
@@ -139,59 +139,104 @@ export class PromptTemplateService implements OnModuleInit {
   constructor(private readonly configService: ConfigService) {}
 
   onModuleInit(): void {
-    this.loadTemplates();
+    this.reloadTemplates();
   }
 
   /**
-   * Loads prompt templates from the configured file path, falling back
-   * to the built-in defaults if the file is missing or invalid.
+   * Reloads prompt templates from the configured file path. Failed loads keep
+   * the currently active configuration, which is the built-in default set at startup.
    *
    * #374: Templates are loaded from a version-controlled config file
    * so operators can update prompts without redeploying code.
    */
-  private loadTemplates(): void {
+  reloadTemplates(): boolean {
     const templatePath = this.configService.get<string>('AI_PROMPT_TEMPLATE_PATH');
     if (!templatePath) {
       this.logger.log('No prompt template path configured; using built-in defaults');
-      return;
+      return false;
     }
 
-    const resolvedPath = resolve(process.cwd(), templatePath);
+    const applicationRoot = resolve(process.cwd());
+    const resolvedPath = resolve(applicationRoot, templatePath);
+    const pathFromApplicationRoot = relative(applicationRoot, resolvedPath);
+    if (
+      pathFromApplicationRoot === '..' ||
+      pathFromApplicationRoot.startsWith(`..${sep}`) ||
+      isAbsolute(pathFromApplicationRoot)
+    ) {
+      this.logger.warn('Prompt template path must be within the application directory');
+      return false;
+    }
     if (!existsSync(resolvedPath)) {
       this.logger.warn(
-        `Prompt template file not found at ${resolvedPath}; using built-in defaults`,
+        `Prompt template file not found at ${resolvedPath}; keeping active templates`,
       );
-      return;
+      return false;
     }
 
     try {
       const raw = readFileSync(resolvedPath, 'utf-8');
       const parsed = JSON.parse(raw) as PromptTemplateConfig;
 
-      // Basic validation
-      if (!parsed.schemaVersion || !parsed.templates) {
-        throw new Error('Invalid prompt template config: missing schemaVersion or templates');
+      if (!this.isValidConfig(parsed)) {
+        throw new Error('Invalid prompt template config');
       }
 
-      // Merge with defaults — file templates override defaults
-      this.templates = {
+      // Construct the complete candidate before replacing the active configuration.
+      const nextTemplates: PromptTemplateConfig = {
         schemaVersion: parsed.schemaVersion,
         templates: {
           ...DEFAULT_TEMPLATES.templates,
           ...parsed.templates,
         },
       };
+      this.templates = nextTemplates;
 
       this.logger.log(
         `Loaded prompt templates from ${resolvedPath} (schema v${parsed.schemaVersion})`,
       );
+      return true;
     } catch (err) {
       this.logger.error(
         `Failed to load prompt templates from ${resolvedPath}: ${(err as Error).message}`,
       );
-      this.logger.warn('Falling back to built-in default templates');
-      this.templates = DEFAULT_TEMPLATES;
+      this.logger.warn('Keeping the previously active prompt templates');
+      return false;
     }
+  }
+
+  private isValidConfig(config: PromptTemplateConfig): boolean {
+    if (
+      !config ||
+      typeof config !== 'object' ||
+      typeof config.schemaVersion !== 'string' ||
+      !config.schemaVersion ||
+      !config.templates ||
+      typeof config.templates !== 'object' ||
+      Array.isArray(config.templates)
+    ) {
+      return false;
+    }
+
+    return Object.values(config.templates).every(
+      (versions) =>
+        Array.isArray(versions) &&
+        versions.length > 0 &&
+        versions.every(
+          (template) =>
+            !!template &&
+            typeof template === 'object' &&
+            typeof template.version === 'string' &&
+            typeof template.description === 'string' &&
+            typeof template.systemPrompt === 'string' &&
+            (template.assistantRole === undefined ||
+              typeof template.assistantRole === 'string') &&
+            (template.metadata === undefined ||
+              (typeof template.metadata === 'object' &&
+                template.metadata !== null &&
+                !Array.isArray(template.metadata))),
+        ),
+    );
   }
 
   /**

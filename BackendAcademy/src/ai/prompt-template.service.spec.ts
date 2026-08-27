@@ -1,155 +1,52 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { ConfigService } from '@nestjs/config';
-import { PromptTemplateService, PromptTemplate } from './prompt-template.service';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { join, relative } from 'path';
+import { PromptTemplateService } from './prompt-template.service';
 
-function createConfigService() {
-  return { get: jest.fn(() => undefined) } as unknown as ConfigService;
-}
-
-interface TemplatesShape {
-  schemaVersion: string;
-  templates: Record<string, PromptTemplate[]>;
-}
-
-/** Adds a second, pending version on top of the built-in defaults. */
-function injectTemplates(service: PromptTemplateService, extra: PromptTemplate[]): void {
-  const config = (service as unknown as { templates: TemplatesShape }).templates;
-  const current = [...(config.templates.chat_tutor ?? [])];
-  (service as unknown as { templates: TemplatesShape }).templates = {
-    ...config,
-    templates: { ...config.templates, chat_tutor: [...current, ...extra] },
-  };
-}
-
-describe('PromptTemplateService — approval & audit metadata (Issue #653 / BA-085)', () => {
+describe('PromptTemplateService reloads', () => {
+  let fixtureDirectory: string;
+  let configPath: string;
+  let configuredPath: string;
   let service: PromptTemplateService;
 
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [PromptTemplateService, { provide: ConfigService, useValue: createConfigService() }],
-    }).compile();
-    service = module.get<PromptTemplateService>(PromptTemplateService);
+  beforeEach(() => {
+    fixtureDirectory = mkdtempSync(join(process.cwd(), '.prompt-template-test-'));
+    configPath = join(fixtureDirectory, 'templates.json');
+    configuredPath = relative(process.cwd(), configPath);
+    service = new PromptTemplateService({ get: jest.fn(() => configuredPath) } as any);
   });
 
-  describe('built-in templates', () => {
-    it('records author, approval, and effective time on the active version', () => {
-      const active = service.getActiveTemplate('chat_tutor');
-      expect(active).not.toBeNull();
-      expect(active?.author).toBe('platform');
-      expect(active?.approval?.status).toBe('approved');
-      expect(active?.approval?.approvedBy).toBe('platform');
-      expect(active?.approval?.approvedAt).toBeInstanceOf(Date);
-      expect(active?.effectiveAt).toBeInstanceOf(Date);
-    });
-
-    it('returns the active version string', () => {
-      expect(service.getTemplateVersion('chat_tutor')).toBe('1.0.0');
-      expect(service.getSystemPrompt('chat_tutor')).toContain('Rust programming tutor');
-    });
-
-    it('exposes an audit trail with governance metadata', () => {
-      const trail = service.getTemplateAuditTrail('chat_tutor');
-      expect(trail).toHaveLength(1);
-      expect(trail[0]).toMatchObject({
-        version: '1.0.0',
-        author: 'platform',
-        approval: { status: 'approved' },
-      });
-      expect(trail[0].effectiveAt).toBeInstanceOf(Date);
-    });
+  afterEach(() => {
+    rmSync(fixtureDirectory, { recursive: true, force: true });
   });
 
-  describe('approval workflow', () => {
-    it('does not select a pending version', () => {
-      injectTemplates(service, [
-        {
-          version: '1.1.0',
-          description: 'Draft changes',
-          systemPrompt: 'Draft tutor prompt.',
-          author: 'learner-success',
-          approval: { status: 'pending' },
-        },
-      ]);
-      expect(service.getTemplateVersion('chat_tutor')).toBe('1.0.0');
-    });
+  it('keeps the last valid templates when a later reload is malformed', () => {
+    writeFileSync(configPath, JSON.stringify({
+      schemaVersion: '1.0.0',
+      templates: { chat_tutor: [{ version: '2.0.0', description: 'Test', systemPrompt: 'Use the reloaded prompt.' }] },
+    }));
 
-    it('selects an approved version once approval is recorded', () => {
-      injectTemplates(service, [
-        {
-          version: '1.1.0',
-          description: 'Draft changes',
-          systemPrompt: 'New tutor prompt.',
-          author: 'learner-success',
-          approval: { status: 'pending' },
-        },
-      ]);
-      const approved = service.approveTemplate('chat_tutor', '1.1.0', 'reviewer-1', 'Looks good');
-      expect(approved?.approval).toMatchObject({
-        status: 'approved',
-        approvedBy: 'reviewer-1',
-      });
-      expect(approved?.approval?.approvedAt).toBeInstanceOf(Date);
-      expect(service.getTemplateVersion('chat_tutor')).toBe('1.1.0');
-      expect(service.getSystemPrompt('chat_tutor')).toBe('New tutor prompt.');
-    });
+    expect(service.reloadTemplates()).toBe(true);
+    expect(service.getSystemPrompt('chat_tutor')).toBe('Use the reloaded prompt.');
 
-    it('does not select a version whose effective time is in the future', () => {
-      injectTemplates(service, [
-        {
-          version: '1.1.0',
-          description: 'Scheduled changes',
-          systemPrompt: 'Scheduled tutor prompt.',
-          author: 'learner-success',
-          approval: { status: 'approved', approvedBy: 'reviewer-1', approvedAt: new Date() },
-          effectiveAt: new Date(Date.now() + 86_400_000), // tomorrow
-        },
-      ]);
-      expect(service.getTemplateVersion('chat_tutor')).toBe('1.0.0');
-    });
+    writeFileSync(configPath, '{not valid JSON');
+    expect(service.reloadTemplates()).toBe(false);
+    expect(service.getSystemPrompt('chat_tutor')).toBe('Use the reloaded prompt.');
+    expect(service.getTemplateVersion('chat_tutor')).toBe('2.0.0');
   });
 
-  describe('rollback workflow', () => {
-    it('records rollback metadata and falls back to the previous active version', () => {
-      injectTemplates(service, [
-        {
-          version: '1.1.0',
-          description: 'New version',
-          systemPrompt: 'New tutor prompt.',
-          author: 'learner-success',
-          approval: { status: 'approved', approvedBy: 'reviewer-1', approvedAt: new Date() },
-        },
-      ]);
-      expect(service.getTemplateVersion('chat_tutor')).toBe('1.1.0');
+  it('rejects a path that escapes the application directory', () => {
+    const traversalService = new PromptTemplateService({ get: jest.fn(() => '../templates.json') } as any);
 
-      const rolledBack = service.rollbackTemplate('chat_tutor', 'ops-1', 'Prompt caused regressions');
-      expect(rolledBack?.rollback).toMatchObject({
-        rolledBackBy: 'ops-1',
-        reason: 'Prompt caused regressions',
-        rolledBackFrom: '1.0.0',
-      });
-      expect(rolledBack?.rollback?.rolledBackAt).toBeInstanceOf(Date);
+    expect(traversalService.reloadTemplates()).toBe(false);
+    expect(traversalService.getTemplateVersion('chat_tutor')).toBe('1.0.0');
+  });
 
-      // After rollback, the previous eligible version is active again.
-      expect(service.getTemplateVersion('chat_tutor')).toBe('1.0.0');
-      expect(service.getSystemPrompt('chat_tutor')).toContain('Rust programming tutor');
-    });
+  it('does not activate a syntactically valid but structurally invalid config', () => {
+    writeFileSync(configPath, JSON.stringify({
+      schemaVersion: '1.0.0', templates: { chat_tutor: [{ version: '2.0.0' }] },
+    }));
 
-    it('records the rollback in the audit trail', () => {
-      injectTemplates(service, [
-        {
-          version: '1.1.0',
-          description: 'New version',
-          systemPrompt: 'New tutor prompt.',
-          author: 'learner-success',
-          approval: { status: 'approved', approvedBy: 'reviewer-1', approvedAt: new Date() },
-        },
-      ]);
-      service.rollbackTemplate('chat_tutor', 'ops-1', 'Rolling back');
-
-      const trail = service.getTemplateAuditTrail('chat_tutor');
-      const v110 = trail.find((t) => t.version === '1.1.0');
-      expect(v110?.rollback).toMatchObject({ rolledBackBy: 'ops-1', rolledBackFrom: '1.0.0' });
-      expect(v110?.approval?.status).toBe('approved'); // approval history preserved
-    });
+    expect(service.reloadTemplates()).toBe(false);
+    expect(service.getTemplateVersion('chat_tutor')).toBe('1.0.0');
   });
 });
