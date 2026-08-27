@@ -8,11 +8,13 @@ import { JwtAdminGuard } from './guards/jwt-admin.guard';
 import { RolesGuard } from './guards/roles.guard';
 import { AuthSessionService } from './auth-session.service';
 import { AuthSessionController } from './auth-session.controller';
+import { AuditModule } from '../audit/audit.module';
 
 @Module({
   imports: [
     ConfigModule,
     RedisModule,
+    AuditModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       useFactory: (config: ConfigService) => ({

@@ -1,10 +1,11 @@
-import {
+﻿import {
   Injectable,
   UnauthorizedException,
   Logger,
   Inject,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { AuditLogService } from '../audit/audit.service';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID, createHash } from 'crypto';
 import { UserRole } from './enums/user-role.enum';
@@ -109,6 +110,7 @@ export class AuthSessionService {
       this.logger.warn(`New device login for user ${userId}`);
     }
 
+    this.auditService.create({ action: 'login', actor: userId, outcome: 'SUCCESS', session: sessionId, requestContext: { deviceHash } });
     return this.buildTokensResponse(accessToken, refreshToken);
   }
 
@@ -180,6 +182,7 @@ export class AuthSessionService {
       session.revoked = true;
       await this.setSession(session);
       this.logger.log(`Session ${sessionId} revoked for user ${session.userId}`);
+      this.auditService.create({ action: 'logout', actor: session.userId, outcome: 'SUCCESS', session: sessionId });
     }
   }
 
