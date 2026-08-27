@@ -35,6 +35,7 @@ import { CourseModule } from './course/course.module';
 import { LoggingModule } from './logging/logging.module';
 import { ProgressModule } from './progress/progress.module';
 import { RedisModule } from './redis/redis.module';
+import { AuditModule } from './audit/audit.module';
 
 @Module({
   imports: [
@@ -43,7 +44,9 @@ import { RedisModule } from './redis/redis.module';
     AuthModule,
     ContractsModule,
     RedisModule,
+    AuditModule,
     UserProfileModule,
+
     TutorProfileModule,
     SubmissionModule,
     RewardsModule,
