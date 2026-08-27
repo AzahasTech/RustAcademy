@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationShutdown } from '@nestjs/common';
 
 export interface UserSnapshot {
   userId: string;
@@ -25,7 +25,7 @@ export interface RecommendationExplainability {
 export type ContentResource = 'course' | 'lesson';
 
 @Injectable()
-export class RedisService {
+export class RedisService implements OnApplicationShutdown {
   private readonly logger = new Logger(RedisService.name);
   private readonly snapshots = new Map<string, UserSnapshot>();
   private readonly cache = new Map<string, { value: unknown; expiresAt: number }>();
@@ -263,5 +263,11 @@ export class RedisService {
    */
   private matchesAnyPrefix(key: string, prefixes: string[], id: string): boolean {
     return prefixes.some((prefix) => key.startsWith(prefix) && key.includes(id));
+  }
+
+  onApplicationShutdown(signal?: string) {
+    this.cache.clear();
+    this.snapshots.clear();
+    this.logger.log(`RedisService shut down gracefully (signal: ${signal}).`);
   }
 }

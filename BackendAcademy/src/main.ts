@@ -51,6 +51,11 @@ async function bootstrap() {
         'JWT_SECRET must be set to a secure value when NODE_ENV=production.',
       );
     }
+  }
+
+  // Graceful shutdown support
+  app.enableShutdownHooks();
+
   // Override the internal config with the already-coerced environment values.
   for (const [key, val] of Object.entries(validatedEnv)) {
     config.set(key, val);
