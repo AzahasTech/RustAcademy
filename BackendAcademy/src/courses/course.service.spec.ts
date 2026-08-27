@@ -168,6 +168,46 @@ describe('CourseService', () => {
     expect(revisions[0].snapshot.title).toBe('Rust 101');
   });
 
+  it('generates normalized unique slugs on create', async () => {
+    const first = await service.create({
+      title: 'Rust 101: Ownership & Borrowing!',
+      description: 'Intro to Rust',
+      level: CourseLevel.BEGINNER,
+      order: 1,
+      learningPathId: 'path-rust',
+      duration: 60,
+    });
+    const second = await service.create({
+      title: 'Rust 101 Ownership Borrowing',
+      description: 'Another course',
+      level: CourseLevel.BEGINNER,
+      order: 2,
+      learningPathId: 'path-rust',
+      duration: 60,
+    });
+
+    expect(first.slug).toBe('rust-101-ownership-borrowing');
+    expect(second.slug).toBe('rust-101-ownership-borrowing-2');
+    expect(await service.findBySlugOrId(first.slug)).toBe(first);
+  });
+
+  it('regenerates the slug when a title changes', async () => {
+    const course = await service.create({
+      title: 'Original Title',
+      description: 'Desc',
+      level: CourseLevel.BEGINNER,
+      order: 1,
+      learningPathId: 'path-1',
+      duration: 30,
+    });
+
+    const updated = await service.update(course.id, { title: 'A New Title' });
+
+    expect(updated!.slug).toBe('a-new-title');
+    expect(await service.findBySlugOrId('original-title')).toBeNull();
+    expect(await service.findBySlugOrId('a-new-title')).toBe(updated);
+  });
+
   it('returns only active courses from findAll()', async () => {
     const active = await service.create({
       title: 'Active',

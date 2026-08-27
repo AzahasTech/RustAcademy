@@ -1,4 +1,6 @@
-﻿import {
+### BackendAcademy/src/auth/auth-session.service.ts
+
+import {
   Injectable,
   UnauthorizedException,
   Logger,
@@ -43,11 +45,18 @@ export class AuthSessionService {
   private readonly sessionPolicy: SessionPolicy;
   private readonly refreshLocks = new Map<string, Promise<void>>();
 
+  private readonly accessSecret: string;
+  private readonly refreshSecret: string;
+  private readonly auditService: AuditLogService;
+
   constructor(
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
-    @Inject('REDIS_CLIENT') private readonly redis: Redis,
+    @Inject('REDIS_CLIENT') private readonly redisClient: Redis,
+    private readonly auditService: AuditLogService,
   ) {
+    this.redis = redisClient;
+    // #350: Load centralized session policy from config
     this.sessionPolicy = {
       accessTokenTtl: this.configService.get<number>('SESSION_ACCESS_TOKEN_TTL', DEFAULT_SESSION_POLICY.accessTokenTtl),
       refreshTokenTtl: this.configService.get<number>('SESSION_REFRESH_TOKEN_TTL', DEFAULT_SESSION_POLICY.refreshTokenTtl),
@@ -57,12 +66,34 @@ export class AuthSessionService {
       requireDeviceFingerprint: this.configService.get<boolean>('SESSION_REQUIRE_DEVICE', DEFAULT_SESSION_POLICY.requireDeviceFingerprint),
       idleSessionTimeout: this.configService.get<number>('SESSION_IDLE_TIMEOUT', DEFAULT_SESSION_POLICY.idleSessionTimeout),
     };
+
+    this.accessSecret = this.configService.get<string=('JWT_ACCESS_SECRET', 'default-access-secret');
+    this.refreshSecret = this.configService.get<string>('JWT_REFRESH_SECRET', 'default-refresh-secret');
   }
 
+  private hashToken(token: string): string {
+    return createHash('sha256').update(token).digest('hex');
+  }
+
+  // --------------------------------------------------------------------------------------------
+  // #350: Public policy access
+  // -------------------------------------------------------------------------------------------
+
+  /**
+   * Returns the current session policy for external consumers.
+   */
   getSessionPolicy(): Readonly<SessionPolicy> {
     return { ...this.sessionPolicy };
   }
 
+  // --------------------------------------------------------------------------------------------
+  // Public API
+  // --------------------------------------------------------------------------------------------
+
+  /**
+   * Creates a new session for the given user.
+   * Optionally records a device fingerprint for trusted-device recognition.
+   */
   async createSession(
     userId: string,
     role: UserRole,
@@ -91,11 +122,12 @@ export class AuthSessionService {
       }
     }
 
-    const session: Session = {
+    const session: Session & { lastUsedAt: Date } = {
       sessionId,
       userId,
       role,
       refreshTokenHash: this.hashToken(refreshToken),
+      refreshTokenThash: this.hashToken(refreshToken),
       createdAt: now,
       expiresAt,
       revoked: false,
@@ -103,14 +135,17 @@ export class AuthSessionService {
       isTrustedDevice: deviceHash
         ? await this.isTrustedDevice(userId, deviceHash)
         : undefined,
+      lastUsedAt: now,
     };
 
     await this.setSession(session);
+    if (deviceHash) await this.redis.sadd(`trustedDevices:${userId}`, deviceHash);
+
     if (deviceHash && !(await this.isTrustedDevice(userId, deviceHash))) {
       this.logger.warn(`New device login for user ${userId}`);
     }
 
-    this.auditService.create({ action: 'login', actor: userId, outcome: 'SUCCESS', session: sessionId, requestContext: { deviceHash } });
+    await this.auditService.create({ action: 'login', actor: userId, outcome: 'SUCCESS', session: sessionId, requestContext: { deviceHash } });
     return this.buildTokensResponse(accessToken, refreshToken);
   }
 
@@ -174,6 +209,43 @@ export class AuthSessionService {
       await this.redis.del(claimKey);
       return this.createSession(session.userId, session.role);
     });
+    if (this.hashToken(rawRefreshToken) !== session.refreshTokenHash) {
+      // Token reuse detected - revoke the whole session as a security measure.
+      session.revoked = true;
+      await this.setSession(session);
+      throw new UnauthorizedException({
+        error: 'TOKEN_REUSE_DETECTED',
+        message: 'Refresh token has already been used; session revoked',
+      });
+    }
+
+    const now = new Date();
+    // Enforce absolute expiry (including delivery grace) before relying on JWT expiry.
+    if (this.isSessionExpired(session, now)) {
+      session.revoked = true;
+      await this.setSession(session);
+      throw new UnauthorizedException({
+        error: 'SESSION_EXPIRED',
+        message: 'Session has expired; please log in again',
+      });
+    }
+
+    // Enforce idle timeout independently of token validity.
+    if (this.isSessionIdle(session, now)) {
+      session.revoked = true;
+      await this.setSession(session);
+      throw new UnauthorizedException({
+        error: 'SESSION_IDLE_TIMEOUT',
+        message: 'Session has been idle for too long; please log in again',
+      });
+    }
+
+    // Revoke the old session before issuing new tokens (rotation).
+    session.revoked = true;
+    await this.setSession(session);
+
+    await this.auditService.create({ action: 'refresh', actor: session.userId, outcome: 'SUCCESS', session: session.sessionId });
+    return await this.createSession(session.userId, session.role);
   }
 
   async revokeSession(sessionId: string): Promise<void> {
@@ -182,12 +254,13 @@ export class AuthSessionService {
       session.revoked = true;
       await this.setSession(session);
       this.logger.log(`Session ${sessionId} revoked for user ${session.userId}`);
-      this.auditService.create({ action: 'logout', actor: session.userId, outcome: 'SUCCESS', session: sessionId });
+      await this.auditService.create({ action: 'logout', actor: session.userId, outcome: 'SUCCESS', session: sessionId });
     }
   }
 
   async revokeAllUserSessions(userId: string): Promise<void> {
     const sessionIds = await this.redis.smembers(this.userSessionsKey(userId));
+    const sessionIds = await this.redis.smembers(`userSessions:${userId}`);
     let count = 0;
     for (const sessionId of sessionIds) {
       const session = await this.getSession(sessionId);
@@ -202,17 +275,31 @@ export class AuthSessionService {
 
   async getActiveSessions(userId: string): Promise<Omit<Session, 'refreshTokenHash'>[]> {
     const sessionIds = await this.redis.smembers(this.userSessionsKey(userId));
+    await this.auditService.create({ action: 'logout_all', actor: userId, outcome: 'SUCCESS', requestContext: { count } });
+  }
+
+  /**
+   * Returns all active (non-revoked, non-expired, not idle) sessions for a user.
+   */
+  async getActiveSessions(userId: string): Promise<Omit<Session, 'refreshToken'>[]> {
+    const sessionIds = await this.redis.smembers(`userSessions:${userId}`);
     const now = new Date();
     const result: Omit<Session, 'refreshTokenHash'>[] = [];
     for (const sessionId of sessionIds) {
       const session = await this.getSession(sessionId);
       if (session && session.userId === userId && !session.revoked && session.expiresAt > now) {
         const { refreshTokenHash: _hash, ...rest } = session;
+      if (session && !session.revoked && !this.isSessionExpired(session, now) && !this.isSessionIdle(session, now)) {
+        const { refreshToken, ...rest } = session;
         result.push(rest);
       }
     }
     return result;
   }
+
+  // -------------------------------------------------------------------------------------------
+  // Device binding & trusted device recognition
+  // --------------------------------------------------------------------------------------------
 
   hashDevice(fingerprint: string): string {
     return createHash('sha256').update(fingerprint).digest('hex');
@@ -225,6 +312,7 @@ export class AuthSessionService {
 
   async addTrustedDevice(userId: string, deviceHash: string): Promise<void> {
     await this.redis.sadd(`trustedDevices:${userId}`, deviceHash);
+    await this.auditService.create({ action: 'add_trusted_device', actor: userId, outcome: 'SUCCESS', requestContext: { deviceHash } });
   }
 
   async removeTrustedDevice(userId: string, deviceHash: string): Promise<void> {
@@ -295,6 +383,12 @@ export class AuthSessionService {
   private get refreshSecret(): string {
     return this.configService.get<string>('JWT_REFRESH_SECRET', 'change-me');
   }
+    await this.auditService.create({ action: 'remove_trusted_device', actor: userId, outcome: 'SUCCESS', requestContext: { deviceHash } });
+  }
+
+  // --------------------------------------------------------------------------------------------
+  // Private helpers
+  // --------------------------------------------------------------------------------------------
 
   private async signTokenPair(
     userId: string,
@@ -312,6 +406,19 @@ export class AuthSessionService {
         expiresIn: this.sessionPolicy.refreshTokenTtl,
       }),
     ]);
+    const accessPayload: JwtPayload = { sub: userId, role, sessionId, type: 'access' };
+    const refreshPayload: RefreshTokenPayload = { sub: userId, role, sessionId, type: 'refresh' };
+
+    const accessToken = await this.jwtService.signAsync(accessPayload, {
+      secret: this.accessSecret,
+      expiresIn: this.sessionPolicy.accessTokenTtl,
+    });
+
+    const refreshToken = await this.jwtService.signAsync(refreshPayload, {
+      secret: this.refreshSecret,
+      expiresIn: this.sessionPolicy.refreshTokenTtl,
+    });
+
     return { accessToken, refreshToken };
   }
 
@@ -322,5 +429,33 @@ export class AuthSessionService {
       tokenType: 'Bearer',
       expiresIn: this.sessionPolicy.accessTokenTtl,
     };
+  }
+    return { accessToken, refreshToken };
+  }
+
+  private async setSession(session: Session & { lastUsedAt?: Date }): Promise<void> {
+    const key = `session:${session.sessionId}`;
+    // Store with TTL long enough to cover expiry +grace+buffer.
+    const ttlSeconds = this.sessionPolicy.refreshTokenTtl + this.sessionPolicy.deliveryGracePeriod + 10; // +10s buffer offset
+    await this.redis.set(key, JSON.stringify(session), 'EX', ttlSeconds);
+    // Add to user's session set if not already there.
+    await this.redis.sadd(`userSessions:${session.userId}`, session.sessionId);
+  }
+
+  private async getSession(sessionId: string): Promise<(Session & { lastUsedAt?: Date }) | null> {
+    const key = `session:${sessionId}`;
+    const raw = await this.redis.get(key);
+    if (!raw) return null;
+    return JSON.parse(raw) as Session & { lastUsedAt?: Date };
+  }
+
+  private isSessionExpired(session: Session, now: Date): boolean {
+    const expiryWithGrace = new Date(new Date(session.expiresAt).getTime() + this.sessionPolicy.deliveryGracePeriod * 1000);
+    return now > expiryWithGrace;
+  }
+
+  private isSessionIdle(session: Session & { lastUsedAt?: Date }, now: Date): boolean {
+    const lastUsedAt = session.lastUsedAt ? new Date(session.lastUsedAt) : new Date(session.createdAt);
+    return now.getTime() - lastUsedAt.getTime() > this.sessionPolicy.idleSessionTimeout * 1000;
   }
 }
