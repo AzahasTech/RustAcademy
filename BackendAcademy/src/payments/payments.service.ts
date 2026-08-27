@@ -9,6 +9,21 @@ import {
 } from './interfaces/transaction.interface';
 import { IContractAdapter } from '../contracts';
 
+/**
+ * Payments service.
+ *
+ * #396: On-chain payment recording is isolated behind the
+ * {@link IContractAdapter} interface. When the adapter is available,
+ * payment events are recorded on-chain for auditability. When it is
+ * not available (e.g., test environments), the service operates
+ * in off-chain-only mode.
+ *
+ * #665: Dependencies are declared once in the constructor. `DatabaseService`
+ * is required; `IContractAdapter` and `ConfigService` are optional so the
+ * service can be instantiated in unit tests with just the required
+ * collaborator. Webhook delivery tuning values are read from config with
+ * safe defaults (see constructor).
+ */
 export interface WebhookPayload {
   id: string;
   url: string;
@@ -110,6 +125,13 @@ export class PaymentsService {
   private static readonly MAX_LIMIT = 100;
   private static readonly DEFAULT_LIMIT = 20;
 
+  /** Default outgoing request timeout in ms. */
+  private readonly defaultTimeoutMs: number;
+  /** Maximum webhook delivery attempts (Issue #412). */
+  private readonly webhookMaxRetries: number;
+  /** Base backoff for webhook retries (Issue #412). */
+  private readonly webhookBaseBackoffMs: number;
+  /** Cap for webhook retry backoff (Issue #412). */
   private readonly defaultTimeoutMs: number;
   private readonly webhookMaxRetries: number;
   private readonly webhookBaseBackoffMs: number;
@@ -120,6 +142,8 @@ export class PaymentsService {
     private readonly configService?: ConfigService,
     @Optional()
     private readonly contractAdapter?: IContractAdapter,
+    @Optional()
+    private readonly configService?: ConfigService,
   ) {
     this.defaultTimeoutMs =
       this.configService?.get<number>('DEFAULT_REQUEST_TIMEOUT_MS') ?? 30_000;
