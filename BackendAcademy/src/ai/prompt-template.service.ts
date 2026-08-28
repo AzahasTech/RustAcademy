@@ -131,6 +131,36 @@ const DEFAULT_TEMPLATES: PromptTemplateConfig = {
   },
 };
 
+/**
+ * Semantic version pattern used to validate `schemaVersion` and each
+ * template `version` field.
+ *
+ * #651 (BA-083): externally supplied templates must declare a valid
+ * version before they can be activated.
+ */
+const SEMVER_REGEX = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-.]+)?(?:\+[0-9A-Za-z-.]+)?$/;
+
+/**
+ * Template name pattern. Names must start with a letter and contain only
+ * letters, digits, underscores, or hyphens — no spaces or other symbols.
+ *
+ * #651 (BA-083): malformed template names are rejected during validation.
+ */
+const TEMPLATE_NAME_REGEX = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
+
+const APPROVAL_STATUSES = new Set(['approved', 'pending', 'rejected']);
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isDateLike(value: unknown): boolean {
+  return (
+    value instanceof Date ||
+    (typeof value === 'string' && value.length > 0 && !isNaN(Date.parse(value)))
+  );
+}
+
 @Injectable()
 export class PromptTemplateService implements OnModuleInit {
   private readonly logger = new Logger(PromptTemplateService.name);
@@ -205,12 +235,22 @@ export class PromptTemplateService implements OnModuleInit {
     }
   }
 
+  /**
+   * Validates the full external prompt-template configuration before it is
+   * allowed to replace the active configuration.
+   *
+   * #651 (BA-083): validation is performed deeply, covering the schema
+   * version, every template name, every version's format, required text
+   * fields, and the contents of each version array (including nested
+   * approval/rollback metadata).
+   */
   private isValidConfig(config: PromptTemplateConfig): boolean {
     if (
       !config ||
       typeof config !== 'object' ||
+      Array.isArray(config) ||
       typeof config.schemaVersion !== 'string' ||
-      !config.schemaVersion ||
+      !SEMVER_REGEX.test(config.schemaVersion) ||
       !config.templates ||
       typeof config.templates !== 'object' ||
       Array.isArray(config.templates)
@@ -218,25 +258,138 @@ export class PromptTemplateService implements OnModuleInit {
       return false;
     }
 
-    return Object.values(config.templates).every(
-      (versions) =>
-        Array.isArray(versions) &&
-        versions.length > 0 &&
-        versions.every(
-          (template) =>
-            !!template &&
-            typeof template === 'object' &&
-            typeof template.version === 'string' &&
-            typeof template.description === 'string' &&
-            typeof template.systemPrompt === 'string' &&
-            (template.assistantRole === undefined ||
-              typeof template.assistantRole === 'string') &&
-            (template.metadata === undefined ||
-              (typeof template.metadata === 'object' &&
-                template.metadata !== null &&
-                !Array.isArray(template.metadata))),
-        ),
-    );
+    for (const [name, versions] of Object.entries(config.templates)) {
+      if (!TEMPLATE_NAME_REGEX.test(name)) {
+        this.logger.warn(`Rejecting prompt template with invalid name: "${name}"`);
+        return false;
+      }
+
+      if (!Array.isArray(versions) || versions.length === 0) {
+        this.logger.warn(`Rejecting template "${name}": versions must be a non-empty array`);
+        return false;
+      }
+
+      const seenVersions = new Set<string>();
+      for (const version of versions) {
+        if (!this.isValidTemplate(version)) {
+          this.logger.warn(`Rejecting malformed version entry for template "${name}"`);
+          return false;
+        }
+
+        if (seenVersions.has(version.version)) {
+          this.logger.warn(
+            `Rejecting template "${name}": duplicate version "${version.version}"`,
+          );
+          return false;
+        }
+        seenVersions.add(version.version);
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * Validates a single prompt-template version entry, including the required
+   * text fields and any nested approval/rollback metadata.
+   *
+   * #651 (BA-083): `version` must be semver, `description` and `systemPrompt`
+   * must be non-empty, and optional metadata must be a plain object.
+   */
+  private isValidTemplate(template: unknown): template is PromptTemplate {
+    if (!template || typeof template !== 'object' || Array.isArray(template)) {
+      return false;
+    }
+    const t = template as Record<string, unknown>;
+
+    if (typeof t.version !== 'string' || !SEMVER_REGEX.test(t.version)) {
+      return false;
+    }
+    if (!isNonEmptyString(t.description)) {
+      return false;
+    }
+    if (!isNonEmptyString(t.systemPrompt)) {
+      return false;
+    }
+    if (t.assistantRole !== undefined && !isNonEmptyString(t.assistantRole)) {
+      return false;
+    }
+    if (t.author !== undefined && typeof t.author !== 'string') {
+      return false;
+    }
+    if (t.effectiveAt !== undefined && !isDateLike(t.effectiveAt)) {
+      return false;
+    }
+    if (!this.isValidApproval(t.approval)) {
+      return false;
+    }
+    if (!this.isValidRollback(t.rollback)) {
+      return false;
+    }
+    if (
+      t.metadata !== undefined &&
+      (typeof t.metadata !== 'object' || t.metadata === null || Array.isArray(t.metadata))
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Validates optional approval metadata on a template version.
+   *
+   * #651 (BA-083): when present, the status must be a recognised value and
+   * any supplied fields must be of the correct type.
+   */
+  private isValidApproval(approval: unknown): boolean {
+    if (approval === undefined) return true;
+    if (!approval || typeof approval !== 'object' || Array.isArray(approval)) {
+      return false;
+    }
+    const a = approval as Record<string, unknown>;
+    if (
+      typeof a.status !== 'string' ||
+      !APPROVAL_STATUSES.has(a.status)
+    ) {
+      return false;
+    }
+    if (a.approvedBy !== undefined && !isNonEmptyString(a.approvedBy)) {
+      return false;
+    }
+    if (a.reviewNotes !== undefined && typeof a.reviewNotes !== 'string') {
+      return false;
+    }
+    if (a.approvedAt !== undefined && !isDateLike(a.approvedAt)) {
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Validates optional rollback metadata on a template version.
+   *
+   * #651 (BA-083): when present, any supplied fields must be of the correct
+   * type.
+   */
+  private isValidRollback(rollback: unknown): boolean {
+    if (rollback === undefined) return true;
+    if (!rollback || typeof rollback !== 'object' || Array.isArray(rollback)) {
+      return false;
+    }
+    const r = rollback as Record<string, unknown>;
+    if (r.rolledBackFrom !== undefined && !isNonEmptyString(r.rolledBackFrom)) {
+      return false;
+    }
+    if (r.rolledBackBy !== undefined && !isNonEmptyString(r.rolledBackBy)) {
+      return false;
+    }
+    if (r.reason !== undefined && typeof r.reason !== 'string') {
+      return false;
+    }
+    if (r.rolledBackAt !== undefined && !isDateLike(r.rolledBackAt)) {
+      return false;
+    }
+    return true;
   }
 
   /**
