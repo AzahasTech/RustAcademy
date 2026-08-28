@@ -43,6 +43,20 @@ export interface RedemptionRecord {
  */
 export type PaymentStatus = 'pending' | 'processing' | 'succeeded' | 'failed' | 'refunded';
 
+/**
+ * Every payment status, in declaration order. Exported so transition tests
+ * and callers can enumerate the full state space without re-listing it.
+ *
+ * #661 (BA-093): used by the exhaustive state-transition test suite.
+ */
+export const PAYMENT_STATUSES: PaymentStatus[] = [
+  'pending',
+  'processing',
+  'succeeded',
+  'failed',
+  'refunded',
+];
+
 export interface PaymentRecord {
   id: string;
   orderId: string;
@@ -152,14 +166,41 @@ export class DatabaseService implements OnModuleInit, OnApplicationShutdown {
   /**
    * Explicit state machine for payment status transitions. A status that
    * does not appear as a key has no legal outgoing transitions (terminal).
+   *
+   * #661 (BA-093): this is the single, centralized source of truth for legal
+   * transitions. Both the webhook ingress path
+   * ({@link PaymentsService.processPaymentWebhookEvent}) and any internal
+   * status update route through {@link updatePaymentStatus}, which consults
+   * these rules, so illegal regressions and terminal-state changes are
+   * rejected everywhere.
    */
-  private static readonly ALLOWED_TRANSITIONS: Record<PaymentStatus, PaymentStatus[]> = {
+  static readonly ALLOWED_TRANSITIONS: Record<PaymentStatus, PaymentStatus[]> = {
     pending: ['processing', 'succeeded', 'failed'],
     processing: ['succeeded', 'failed'],
     succeeded: ['refunded'],
     failed: [],
     refunded: [],
   };
+
+  /**
+   * Returns whether transitioning from `from` to `to` is legal under the
+   * centralized payment state machine (#661 / BA-093). A no-op
+   * (`from === to`) is considered legal because callers treat it as an
+   * idempotent no-op rather than a transition.
+   */
+  static isLegalPaymentTransition(from: PaymentStatus, to: PaymentStatus): boolean {
+    if (from === to) return true;
+    const allowed = DatabaseService.ALLOWED_TRANSITIONS[from] ?? [];
+    return allowed.includes(to);
+  }
+
+  /**
+   * Returns whether a status is terminal (has no legal outgoing transitions),
+   * so any further change from it must be rejected (#661 / BA-093).
+   */
+  static isTerminalPaymentStatus(status: PaymentStatus): boolean {
+    return (DatabaseService.ALLOWED_TRANSITIONS[status] ?? []).length === 0;
+  }
 
   onModuleInit() {
     this.seedSampleCoupons();
