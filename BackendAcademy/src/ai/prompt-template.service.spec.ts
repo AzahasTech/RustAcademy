@@ -22,7 +22,7 @@ describe('PromptTemplateService reloads', () => {
   it('keeps the last valid templates when a later reload is malformed', () => {
     writeFileSync(configPath, JSON.stringify({
       schemaVersion: '1.0.0',
-      templates: { chat_tutor: [{ version: '2.0.0', description: 'Test', systemPrompt: 'Use the reloaded prompt.' }] },
+      templates: { chat_tutor: [{ version: '2.0.0', description: 'Test', systemPrompt: 'Use the reloaded prompt.', approval: { status: 'approved' } }] },
     }));
 
     expect(service.reloadTemplates()).toBe(true);
