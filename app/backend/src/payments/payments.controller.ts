@@ -2,6 +2,7 @@ import { Controller, Get, Query } from "@nestjs/common";
 import { ApiTags, ApiOperation, ApiResponse } from "@nestjs/swagger";
 
 import { HorizonService } from "../transactions/horizon.service";
+import { SensitiveMutation } from "../auth/decorators/sensitive-mutation.decorator";
 
 type RecentPaymentsQuery = {
   address: string;
@@ -14,7 +15,12 @@ type RecentPaymentsQuery = {
 export class PaymentsController {
   constructor(private readonly horizonService: HorizonService) {}
 
+  // Read-only, but payment-sensitive: exposes an address's payment history,
+  // which is a reconnaissance target for scraping/enumeration. Tagged
+  // "sensitive" (Issue #551) for the stricter per-user+per-IP limits and
+  // the audit trail, even though it has no side effects of its own.
   @Get("recent")
+  @SensitiveMutation("payments.recent.query")
   @ApiOperation({
     summary: "Fetch recent payments for an address (since timestamp)",
   })

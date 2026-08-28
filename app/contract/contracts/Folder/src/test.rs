@@ -53,6 +53,7 @@ fn test_emergency_mode_blocks_risky_entry_points_and_allows_safe_paths() {
     let amount: i128 = 1000;
 
     client.initialize(&admin);
+    client.grant_role(&admin, &admin, &crate::types::Role::Governance);
 
     let sac_client = soroban_sdk::token::StellarAssetClient::new(&env, &token);
     env.mock_all_auths();
@@ -86,10 +87,18 @@ fn test_emergency_mode_blocks_risky_entry_points_and_allows_safe_paths() {
 
     let refund_res = client.try_refund(&commitment, &user);
 
-    match refund_res {
-        Ok(Ok(_)) => (),
-        Ok(Err(e)) => panic!("Contract Logic Error (Check Status/Expiry): {:?}", e),
-        Err(e) => panic!("Host Auth Error 10 (Check Auth/Account existence): {:?}", e),
+    match &refund_res {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => assert!(
+            false,
+            "Expected refund to succeed but got contract logic error: {:?}",
+            e
+        ),
+        Err(e) => assert!(
+            false,
+            "Expected refund to succeed but got host error: {:?}",
+            e
+        ),
     }
 
     assert!(client.try_cleanup_escrow(&commitment).is_ok());
@@ -161,6 +170,7 @@ fn setup_escrow(
         #[allow(clippy::needless_borrow)]
         arbiters: Vec::new(&env),
         arbiter_threshold: 0,
+        schema_version: crate::types::ESCROW_SCHEMA_VERSION,
     };
 
     env.as_contract(contract_id, || {
@@ -196,6 +206,7 @@ fn setup_escrow_with_owner(
         #[allow(clippy::needless_borrow)]
         arbiters: Vec::new(&env),
         arbiter_threshold: 0,
+        schema_version: crate::types::ESCROW_SCHEMA_VERSION,
     };
     env.as_contract(contract_id, || {
         let storage_commitment: Bytes = commitment.into();
@@ -366,8 +377,26 @@ fn assert_contract_error<T>(
     expected:  RustAcademyError,
 ) {
     match result {
-        Err(Ok(actual)) => assert_eq!(actual, expected),
-        _ => panic!("expected contract error"),
+        Err(Ok(actual)) => assert_eq!(
+            actual, expected,
+            "Expected contract error {:?} but got {:?}",
+            expected, actual
+        ),
+        Err(Err(host_err)) => assert!(
+            false,
+            "Expected contract error {:?} but got host error: {:?}",
+            expected, host_err
+        ),
+        Ok(Ok(_)) => assert!(
+            false,
+            "Expected contract error {:?} but call succeeded",
+            expected
+        ),
+        Ok(Err(conversion_err)) => assert!(
+            false,
+            "Expected contract error {:?} but got conversion error: {:?}",
+            expected, conversion_err
+        ),
     }
 }
 
@@ -376,23 +405,27 @@ fn latest_contract_event(env: &Env, contract_id: &Address) -> (soroban_sdk::Vec<
     let len = all.len();
 
     for i in (0..len).rev() {
-        let event = all.get(i).unwrap();
+        let event = all.get(i).expect("Event index out of bounds while scanning events");
         if event.0 == *contract_id {
             return (event.1, event.2);
         }
     }
 
-    panic!("no contract event found for contract id")
+    panic!(
+        "No contract event found for contract id — expected at least one event to have been emitted"
+    )
 }
 
 fn event_data_map(env: &Env, data: Val) -> Map<Symbol, Val> {
-    data.try_into_val(env).unwrap()
+    data.try_into_val(env)
+        .expect("Failed to convert event data to Map<Symbol, Val>")
 }
 
 #[test]
 fn test_event_schema_catalog_locks_canonical_topics_and_payloads() {
     assert_eq!(EVENT_SCHEMA_VERSION, 2);
-    assert_eq!(EVENT_SCHEMAS.len(), 31);
+    assert_eq!(EVENT_SCHEMAS.len(), 34);
+    assert!(crate::events::validate_event_schemas().is_ok());
 
     let escrow_deposited = EVENT_SCHEMAS
         .iter()
@@ -407,6 +440,7 @@ fn test_event_schema_catalog_locks_canonical_topics_and_payloads() {
         &[
             "amount_due",
             "amount_paid",
+            "event_type_id",
             "expires_at",
             "ledger_sequence",
             "schema_version",
@@ -726,6 +760,8 @@ fn test_commitment_cycle() {
 #[test]
 fn test_create_escrow() {
     let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
     let from = Address::generate(&env);
     let to = Address::generate(&env);
     let amount = 1_000;
@@ -1209,7 +1245,13 @@ fn test_config_mutation_before_initialize_fails_deterministically() {
     let (env, client) = setup();
     let caller = Address::generate(&env);
 
-    let result = client.try_set_fee_config(&caller, &crate::types::FeeConfig { fee_bps: 100 });
+    let result = client.try_set_fee_config(
+        &caller,
+        &crate::types::FeeConfig {
+            fee_bps: 100,
+            schema_version: crate::types::FEE_CONFIG_SCHEMA_VERSION,
+        },
+    );
     assert_contract_error(result,  RustAcademyError::Unauthorized);
 }
 
@@ -1549,6 +1591,7 @@ fn test_get_commitment_state_spent() {
         #[allow(clippy::needless_borrow)]
         arbiters: Vec::new(&env),
         arbiter_threshold: 0,
+        schema_version: crate::types::ESCROW_SCHEMA_VERSION,
     };
 
     env.as_contract(&client.address, || {
@@ -1700,6 +1743,7 @@ fn test_verify_proof_view_spent_commitment() {
         #[allow(clippy::needless_borrow)]
         arbiters: Vec::new(&env),
         arbiter_threshold: 0,
+        schema_version: crate::types::ESCROW_SCHEMA_VERSION,
     };
 
     let escrow_key = soroban_sdk::Symbol::new(&env, "escrow");
@@ -1799,6 +1843,7 @@ fn test_get_escrow_details_spent_status() {
         #[allow(clippy::needless_borrow)]
         arbiters: Vec::new(&env),
         arbiter_threshold: 0,
+        schema_version: crate::types::ESCROW_SCHEMA_VERSION,
     };
 
     env.as_contract(&client.address, || {
@@ -3152,6 +3197,7 @@ mod tests {
                 #[allow(clippy::needless_borrow)]
                 arbiters: Vec::new(&env),
                 arbiter_threshold: 0,
+                schema_version: crate::types::ESCROW_SCHEMA_VERSION,
             }
         }
 
@@ -3239,6 +3285,7 @@ mod tests {
                 #[allow(clippy::needless_borrow)]
                 arbiters: Vec::new(&env),
                 arbiter_threshold: 0,
+                schema_version: crate::types::ESCROW_SCHEMA_VERSION,
             }
         }
 

@@ -6,6 +6,12 @@ import {
   levelForXp,
   xpThresholdForLevel,
   xpToNextLevel,
+  PRIZE_POOL_DEFAULT_CURRENCY,
+  PRIZE_DISTRIBUTION_PERCENTAGES,
+  STREAK_MILESTONE_DAYS,
+  STREAK_MILESTONE_XP,
+  LEVEL_MILESTONE_INTERVAL,
+  LEVEL_MILESTONE_XP,
 } from './rewards.constants';
 
 // ---------------------------------------------------------------------------
@@ -93,6 +99,8 @@ describe('RewardsService', () => {
     }).compile();
 
     service = module.get<RewardsService>(RewardsService);
+    // Ensure clean state for every test (#451)
+    service.clearAll();
   });
 
   // ---- getAllThresholds ----
@@ -176,6 +184,10 @@ describe('RewardsService', () => {
         xpToNextLevel: 100,
         currentLevelThreshold: 0,
         nextLevelThreshold: 100,
+        streak: {
+          currentStreak: 0,
+          lastActivityDate: null,
+        },
       });
     });
 
@@ -228,6 +240,304 @@ describe('RewardsService', () => {
     it('creates the user record if it does not exist', () => {
       const prog = service.addXp('brand-new-user', 50);
       expect(prog.xp).toBe(50);
+    });
+  });
+
+  // ---- Leaderboard ----
+
+  describe('getLeaderboard()', () => {
+    const USERS = ['lead-alice', 'lead-bob', 'lead-charlie'];
+
+    beforeEach(() => {
+      // Reset users and give them distinct XP values
+      for (const u of USERS) service.resetXp(u);
+      service.addXp(USERS[0], 500); // alice: 500
+      service.addXp(USERS[1], 900); // bob:   900  ← highest
+      service.addXp(USERS[2], 200); // charlie: 200
+    });
+
+    it('returns entries sorted by XP descending', () => {
+      const { leaderboard } = service.getLeaderboard(10);
+      expect(leaderboard[0].userId).toBe(USERS[1]); // bob first
+      expect(leaderboard[1].userId).toBe(USERS[0]); // alice second
+      expect(leaderboard[2].userId).toBe(USERS[2]); // charlie third
+    });
+
+    it('respects the topN parameter', () => {
+      const { leaderboard } = service.getLeaderboard(2);
+      expect(leaderboard).toHaveLength(2);
+    });
+
+    it('reports totalParticipants correctly', () => {
+      const { totalParticipants } = service.getLeaderboard(10);
+      expect(totalParticipants).toBeGreaterThanOrEqual(USERS.length);
+    });
+
+    it('assigns increasing rank numbers', () => {
+      const { leaderboard } = service.getLeaderboard(10);
+      leaderboard.forEach((entry, i) => {
+        expect(entry.rank).toBe(i + 1);
+      });
+    });
+
+    it('each entry has a non-empty title', () => {
+      const { leaderboard } = service.getLeaderboard(10);
+      for (const entry of leaderboard) {
+        expect(typeof entry.title).toBe('string');
+        expect(entry.title.length).toBeGreaterThan(0);
+      }
+    });
+  });
+
+  describe('getUserLeaderboardPosition(userId)', () => {
+    const USERS = ['rank-alice', 'rank-bob', 'rank-charlie'];
+
+    beforeEach(() => {
+      // Reset users from all suites so ranks are predictable
+      const allKnown = [
+        ...USERS,
+        'test-user-abc',
+        'brand-new-user',
+        'u',
+        'lead-alice',
+        'lead-bob',
+        'lead-charlie',
+      ];
+      for (const u of allKnown) service.resetXp(u);
+      service.addXp(USERS[0], 100); // alice:   100
+      service.addXp(USERS[1], 700); // bob:     700  ← highest
+      service.addXp(USERS[2], 400); // charlie: 400
+    });
+
+    it('returns rank 1 for the top user', () => {
+      const pos = service.getUserLeaderboardPosition(USERS[1]);
+      expect(pos.rank).toBe(1);
+    });
+
+    it('returns correct rank for a middle user', () => {
+      const pos = service.getUserLeaderboardPosition(USERS[2]);
+      expect(pos.rank).toBe(2);
+    });
+
+    it('returns correct rank for the last user', () => {
+      const pos = service.getUserLeaderboardPosition(USERS[0]);
+      expect(pos.rank).toBe(3);
+    });
+
+    it('throws NotFoundException for unknown user', () => {
+      expect(() =>
+        service.getUserLeaderboardPosition('ghost-user'),
+      ).toThrow(NotFoundException);
+    });
+
+    it('includes totalParticipants count', () => {
+      const pos = service.getUserLeaderboardPosition(USERS[1]);
+      expect(pos.totalParticipants).toBeGreaterThanOrEqual(USERS.length);
+    });
+  });
+
+  // ---- Prize pool ----
+
+  describe('getPrizePool() / createPrizePool()', () => {
+    it('getPrizePool returns null when no pool exists', () => {
+      expect(service.getPrizePool()).toBeNull();
+    });
+
+    it('createPrizePool creates a pool with correct values', () => {
+      const pool = service.createPrizePool(5000, 'XLM');
+      expect(pool.totalAmount).toBe(5000);
+      expect(pool.currency).toBe('XLM');
+      expect(pool.distributedAt).toBeNull();
+      expect(pool.distribution).toEqual([]);
+      expect(pool.id).toMatch(/^prize_/);
+    });
+
+    it('createPrizePool uses default currency when omitted', () => {
+      const pool = service.createPrizePool(100);
+      expect(pool.currency).toBe(PRIZE_POOL_DEFAULT_CURRENCY);
+    });
+
+    it('createPrizePool throws on non-positive amount', () => {
+      expect(() => service.createPrizePool(0)).toThrow();
+      expect(() => service.createPrizePool(-10)).toThrow();
+    });
+
+    it('getPrizePool returns the latest pool', () => {
+      service.createPrizePool(100);
+      const second = service.createPrizePool(200);
+      const latest = service.getPrizePool();
+      expect(latest!.id).toBe(second.id);
+      expect(latest!.totalAmount).toBe(200);
+    });
+  });
+
+  describe('distributePrizes()', () => {
+    const USERS = ['dist-alice', 'dist-bob', 'dist-charlie'];
+
+    beforeEach(() => {
+      for (const u of USERS) service.resetXp(u);
+      service.addXp(USERS[0], 100);
+      service.addXp(USERS[1], 200);
+      service.addXp(USERS[2], 300);
+    });
+
+    it('auto-creates a pool if none exists', () => {
+      const result = service.distributePrizes();
+      expect(result.totalAmount).toBeGreaterThan(0);
+      expect(result.distributedAt).toBeInstanceOf(Date);
+    });
+
+    it('distributes prizes to top 10 leaderboard members', () => {
+      const result = service.distributePrizes();
+      expect(result.distribution.length).toBeGreaterThan(0);
+      expect(result.distribution.length).toBeLessThanOrEqual(10);
+    });
+
+    it('top rank receives the largest amount', () => {
+      const result = service.distributePrizes();
+      const amounts = result.distribution.map((d) => d.amount);
+      for (let i = 1; i < amounts.length; i++) {
+        expect(amounts[i - 1]).toBeGreaterThanOrEqual(amounts[i]);
+      }
+    });
+
+    it('distribution amounts use the configured percentages', () => {
+      const result = service.distributePrizes();
+      for (const dist of result.distribution) {
+        const config = PRIZE_DISTRIBUTION_PERCENTAGES.find(
+          (c) => c.rank === dist.rank,
+        );
+        expect(config).toBeDefined();
+        if (config) {
+          const expected = Math.floor(
+            (result.totalAmount * config.percentage) / 100,
+          );
+          expect(dist.amount).toBe(expected);
+        }
+      }
+    });
+
+    it('marks the pool as distributed', () => {
+      const result = service.distributePrizes();
+      expect(result.distributedAt).toBeInstanceOf(Date);
+    });
+
+    it('is idempotent — second call returns same result', () => {
+      const first = service.distributePrizes();
+      const second = service.distributePrizes();
+      expect(second.id).toBe(first.id);
+      expect(second.distributedAt).toEqual(first.distributedAt);
+    });
+  });
+
+  // ---- recordActivity ----
+
+  describe('recordActivity(userId, date, xpAmount)', () => {
+    const USER = 'activity-user';
+    const BASE_DATE = new Date('2023-01-01T12:00:00Z');
+
+    beforeEach(() => {
+      service.resetXp(USER);
+    });
+
+    it('records initial activity for a new user', () => {
+      const prog = service.recordActivity(USER, BASE_DATE, 100);
+      expect(prog.xp).toBe(100);
+      expect(prog.streak.currentStreak).toBe(1);
+      expect(prog.streak.lastActivityDate).toBe(BASE_DATE.toISOString());
+    });
+
+    it('increases streak for consecutive days', () => {
+      service.recordActivity(USER, BASE_DATE, 10);
+      const nextDay = new Date(BASE_DATE.getTime() + 24 * 60 * 60 * 1000);
+      const prog = service.recordActivity(USER, nextDay, 10);
+
+      expect(prog.streak.currentStreak).toBe(2);
+      expect(prog.streak.lastActivityDate).toBe(nextDay.toISOString());
+    });
+
+    it('does not increase streak for same-day activity', () => {
+      service.recordActivity(USER, BASE_DATE, 10);
+      const sameDay = new Date(BASE_DATE.getTime() + 1 * 60 * 60 * 1000); // 1 hour later
+      const prog = service.recordActivity(USER, sameDay, 10);
+
+      expect(prog.streak.currentStreak).toBe(1);
+      expect(prog.streak.lastActivityDate).toBe(sameDay.toISOString());
+    });
+
+    it('resets streak if there is a gap of more than one day', () => {
+      service.recordActivity(USER, BASE_DATE, 10);
+      const gapDay = new Date(BASE_DATE.getTime() + 2 * 24 * 60 * 60 * 1000); // 2 days later
+      const prog = service.recordActivity(USER, gapDay, 10);
+
+      expect(prog.streak.currentStreak).toBe(1);
+      expect(prog.streak.lastActivityDate).toBe(gapDay.toISOString());
+    });
+
+    it('awards streak milestone XP', () => {
+      // Set streak to STREAK_MILESTONE_DAYS - 1
+      for (let i = 0; i < STREAK_MILESTONE_DAYS - 1; i++) {
+        const d = new Date(BASE_DATE.getTime() + i * 24 * 60 * 60 * 1000);
+        service.recordActivity(USER, d, 10);
+      }
+      
+      // The next day should hit the milestone
+      const milestoneDay = new Date(BASE_DATE.getTime() + (STREAK_MILESTONE_DAYS - 1) * 24 * 60 * 60 * 1000);
+      const prog = service.recordActivity(USER, milestoneDay, 10);
+
+      // Streak is now STREAK_MILESTONE_DAYS
+      expect(prog.streak.currentStreak).toBe(STREAK_MILESTONE_DAYS);
+      
+      // XP should be: (base_xp * count) + STREAK_MILESTONE_XP
+      // 10 * STREAK_MILESTONE_DAYS + STREAK_MILESTONE_XP
+      expect(prog.xp).toBe(10 * STREAK_MILESTONE_DAYS + STREAK_MILESTONE_XP);
+    });
+
+    it('awards level milestone XP', () => {
+      // Reach level 5 (milestone)
+      // xpThresholdForLevel(5) = 100 * 4^2 = 1600
+      // We use recordActivity to ensure we are testing the logic
+      
+      // First, get to level 4
+      const level4Xp = xpThresholdForLevel(4);
+      service.recordActivity(USER, BASE_DATE, level4Xp);
+      
+      // Now add enough XP to cross level 5
+      const prog = service.recordActivity(USER, BASE_DATE, 1000); // 900 + 1000 = 1900, which is level 5 or higher
+      
+      expect(prog.level).toBeGreaterThanOrEqual(5);
+      // It should have awarded LEVEL_MILESTONE_XP
+      // Total XP = level4Xp + 1000 + LEVEL_MILESTONE_XP
+      expect(prog.xp).toBe(level4Xp + 1000 + LEVEL_MILESTONE_XP);
+    });
+
+    it('awards multiple level milestones if crossing several at once', () => {
+      // Reach level 1 (0 XP)
+      // Add a huge amount of XP to jump to level 11 (milestones at 5 and 10)
+      const hugeXp = xpThresholdForLevel(11);
+      const prog = service.recordActivity(USER, BASE_DATE, hugeXp);
+
+      expect(prog.level).toBeGreaterThanOrEqual(11);
+      // Total XP = hugeXp + 2 * LEVEL_MILESTONE_XP
+      expect(prog.xp).toBe(hugeXp + 2 * LEVEL_MILESTONE_XP);
+    });
+  });
+
+  // ---- resetXp ----
+
+  describe('resetXp(userId)', () => {
+    const USER = 'reset-user';
+
+    beforeEach(() => {
+      service.recordActivity(USER, new Date(), 100);
+    });
+
+    it('resets XP to 0 and clears streak', () => {
+      service.resetXp(USER);
+      const prog = service.getUserProgression(USER);
+      expect(prog.xp).toBe(0);
+      expect(prog.streak.currentStreak).toBe(0);
+      expect(prog.streak.lastActivityDate).toBeNull();
     });
   });
 });

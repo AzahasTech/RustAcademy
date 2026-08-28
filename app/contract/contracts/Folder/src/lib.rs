@@ -14,6 +14,8 @@ mod escrow_id;
 #[cfg(test)]
 mod escrow_id_test;
 mod events;
+#[cfg(test)]
+mod events_test;
 mod fee;
 mod fee_router;
 #[cfg(test)]
@@ -32,6 +34,11 @@ mod nonce_test;
 mod oracle;
 mod privacy;
 #[cfg(test)]
+mod reentrancy_test;
+mod legacy_privacy;
+#[cfg(test)]
+mod lifecycle_test;
+#[cfg(test)]
 mod role_test;
 mod stealth;
 #[cfg(test)]
@@ -49,6 +56,7 @@ mod upgrade_test;
 
 use errors::RustAcademyError;
 use storage::*;
+use privacy::{add_privacy_history, get_privacy_history, get_privacy_level, set_privacy_level};
 use types::{
     ContractHealth, DeploymentMetadata, DisputeExpiryAction, EscrowEntry,
     EscrowOperationEstimate, EscrowOperationLimits, EscrowStatus, FeatureFlags, FeeConfig,
@@ -106,12 +114,14 @@ pub use types::FeeRatio;
 /// state-mutating method is gated accordingly. Unauthorized calls fail with a
 /// stable error code rather than silently succeeding.
 ///
-/// | Class      | Gate                                             | Methods (examples) |
-/// |------------|--------------------------------------------------|--------------------|
-/// | **Admin**  | `require_admin` (+ `require_initialized`)         | `set_paused`, `pause_features`, `set_fee_config`, `set_admin`, `migrate`, `upgrade`, `start/complete/cancel_upgrade`, `grant/revoke_role`, `rotate_fee_collector` |
-/// | **Owner**  | caller `require_auth()`                            | `deposit*`, `withdraw`, `refund`, `set_privacy`, `enable_privacy`, `stealth_withdraw` |
-/// | **Arbiter**| arbiter `require_auth()` + membership check       | `resolve_dispute`, `vote_for_dispute`, `resolve_dispute_multi_sig` |
-/// | **Public** | none (read-only / pure)                           | `get_*`, `privacy_status`, `privacy_history`, `verify_amount_commitment`, `health_check` |
+/// | Class        | Gate                                               | Methods (examples) |
+/// |--------------|----------------------------------------------------|--------------------|
+/// | **Governance**| `require_governance` (+ `require_initialized`)       | `activate_emergency_mode`, `start/upgrade/complete/cancel_upgrade`, `set_upgrade_window`, `set_upgrade_gate`, `migrate` |
+/// | **Admin**    | `require_admin` (+ `require_initialized`)           | `set_paused`, `pause_features`, `set_fee_config`, `set_admin`, `grant/revoke_role`, `rotate_fee_collector`, `register/unregister_hook`, `set_platform_wallet` |
+/// | **Operator** | `require_any_role([Admin, Operator])`               | `set_paused`, `set_fee_config`, `set_per_asset_fee`, `set_pause_flags` |
+/// | **Owner**    | caller `require_auth()`                              | `deposit*`, `withdraw`, `refund`, `set_privacy`, `enable_privacy`, `stealth_withdraw` |
+/// | **Arbiter**  | arbiter `require_auth()` + membership check         | `resolve_dispute`, `vote_for_dispute`, `resolve_dispute_multi_sig` |
+/// | **Public**   | none (read-only / pure)                             | `get_*`, `privacy_status`, `privacy_history`, `verify_amount_commitment`, `health_check` |
 ///
 /// ### Mode gating
 ///
@@ -219,17 +229,24 @@ impl RustAcademyContract {
 
     /// Enable or disable privacy for an account.
     ///
+    /// Access: **owner** — `owner` must authorize the call. Gated by the
+    /// [`PauseFlag::SetPrivacy`] feature flag. The auth check is enforced
+    /// inside [`privacy::set_privacy`].
+    ///
     /// # Arguments
     /// * `env` - The contract environment
-    /// * `owner` - The account address to configure
+    /// * `owner` - The account address to configure (must authorize)
     /// * `enabled` - `true` to enable privacy, `false` to disable
     ///
     /// # Errors
-    /// * `ContractPaused` - Contract is currently paused
+    /// * `Unauthorized` - Contract is not initialized
+    /// * `OperationPaused` - The `SetPrivacy` feature is paused
     /// * `PrivacyAlreadySet` - Privacy state is already at the requested value
     pub fn set_privacy(env: Env, owner: Address, enabled: bool) -> Result<(), RustAcademyError> {
+        // guard_initialized ensures the contract is properly set up before any
+        // state is mutated. Owner auth is enforced inside privacy::set_privacy.
         admin::guard_initialized(&env)?;
-        if is_feature_paused(&env, PauseFlag::SetPrivacy) {
+        if storage::is_feature_paused(&env, PauseFlag::SetPrivacy) {
             return Err(RustAcademyError::OperationPaused);
         }
         privacy::set_privacy(&env, owner, enabled)
@@ -359,13 +376,20 @@ impl RustAcademyContract {
     /// Returns the new counter value. Parameters `_from`, `_to`, `_amount` are reserved for
     /// future use; the implementation only increments the counter.
     ///
+    /// Access: requires initialized contract. Gated by `guard_initialized` to prevent
+    /// counter manipulation on an uninitialized deployment.
+    ///
     /// # Arguments
     /// * `env` - The contract environment
     /// * `_from` - Reserved (depositor address for future use)
     /// * `_to` - Reserved (recipient address for future use)
     /// * `_amount` - Reserved (amount for future use)
-    pub fn create_escrow(env: Env, _from: Address, _to: Address, _amount: u64) -> u64 {
-        increment_escrow_counter(&env)
+    ///
+    /// # Errors
+    /// * `Unauthorized` - Contract has not been initialized
+    pub fn create_escrow(env: Env, _from: Address, _to: Address, _amount: u64) -> Result<u64, RustAcademyError> {
+        admin::guard_initialized(&env)?;
+        Ok(increment_escrow_counter(&env))
     }
 
     /// Health check for deployment and monitoring.
@@ -414,9 +438,13 @@ impl RustAcademyContract {
             arbiter,
         )
     }
-    /// Activate emergency mode (irreversible). Only admin can call. Emits event.
+    /// Activate emergency mode (irreversible). **Governance only**.
+    ///
+    /// Emergency mode blocks most mutating operations. It is irreversible
+    /// and requires Governance-level authority to prevent accidental activation
+    /// by operators performing routine admin tasks.
     pub fn activate_emergency_mode(env: Env, caller: Address) -> Result<(), RustAcademyError> {
-        admin::require_admin(&env, &caller)?;
+        admin::require_governance(&env, &caller)?;
         if storage::is_emergency_mode(&env) {
             return Ok(()); // Already set
         }
@@ -572,7 +600,7 @@ impl RustAcademyContract {
         env: Env,
         stealth_address: BytesN<32>,
     ) -> Result<(), RustAcademyError> {
-        admin::require_initialized(&env)?;
+        admin::guard_initialized(&env)?;
         stealth::cleanup_stealth_escrow(&env, stealth_address)
     }
 
@@ -818,6 +846,16 @@ impl RustAcademyContract {
         )
     }
 
+    /// Validate all static event schema definitions against canonical rules (Issue #312).
+    ///
+    /// Returns `Ok(true)` if all schemas in `EVENT_SCHEMAS` satisfy canonical
+    /// uniqueness, topic prefix, sorted payload keys, mandatory replay fields, and
+    /// versioning constraints.
+    pub fn validate_event_schemas(_env: Env) -> Result<bool, RustAcademyError> {
+        events::validate_event_schemas().map_err(|_| RustAcademyError::InternalError)?;
+        Ok(true)
+    }
+
     /// Return the current granular pause bitmask.
     ///
     /// See [`crate::storage::PauseFlag`] for the bit definitions.  A value of `0`
@@ -849,7 +887,7 @@ impl RustAcademyContract {
         escrow::estimate_withdraw_resources_view(&env, token, salt_bytes)
     }
 
-    /// Run any pending data migrations for the current contract code (**Admin only**).
+    /// Run any pending data migrations for the current contract code (**Admin or Governance**).
     ///
     /// This entrypoint is intended to be called immediately after upgrading the contract WASM
     /// whenever the new release introduces storage or schema changes.
@@ -871,13 +909,6 @@ impl RustAcademyContract {
     pub fn set_paused(env: Env, caller: Address, new_state: bool) -> Result<(), RustAcademyError> {
         admin::guard_admin_config(&env)?;
         admin::set_paused(&env, caller, new_state)
-    }
-
-    /// Check if the function is currently paused.
-    ///
-    /// Returns `true` if paused, `false` otherwise.
-    pub fn is_feature_paused(env: &Env, flag: PauseFlag) -> bool {
-        storage::is_feature_paused(env, flag)
     }
 
     /// Pause a function in the contract (**Admin only**).
@@ -969,15 +1000,15 @@ impl RustAcademyContract {
         storage::get_fee_config(&env)
     }
 
-    /// Register an external hook contract to receive escrow lifecycle callbacks.
-    pub fn register_hook(env: Env, hook_contract: Address) -> Result<(), RustAcademyError> {
-        admin::guard_initialized(&env)?;
+    /// Register an external hook contract to receive escrow lifecycle callbacks (**Admin only**).
+    pub fn register_hook(env: Env, caller: Address, hook_contract: Address) -> Result<(), RustAcademyError> {
+        admin::require_admin(&env, &caller)?;
         hook::register_hook(&env, hook_contract)
     }
 
-    /// Unregister a hook contract.
-    pub fn unregister_hook(env: Env, hook_contract: Address) -> Result<(), RustAcademyError> {
-        admin::guard_initialized(&env)?;
+    /// Unregister a hook contract (**Admin only**).
+    pub fn unregister_hook(env: Env, caller: Address, hook_contract: Address) -> Result<(), RustAcademyError> {
+        admin::require_admin(&env, &caller)?;
         hook::unregister_hook(&env, hook_contract)
     }
 
@@ -986,7 +1017,24 @@ impl RustAcademyContract {
         hook::get_registered_hooks(&env)
     }
 
-    /// Set the fee configuration (**Admin only**).
+    /// Set the global fee configuration (**Admin or Operator only**).
+    ///
+    /// This is the fallback fee applied to all tokens that don't have a per-asset override.
+    /// The fee is expressed in basis points (1 = 0.01%, 100 = 1%, 10000 = 100%).
+    ///
+    /// # Priority Order
+    /// Fees are resolved in this order:
+    /// 1. Per-asset override (via [`set_per_asset_fee`]) if configured for the token
+    /// 2. Oracle dynamic pricing (if configured and price is fresh)
+    /// 3. Global static config (this method)
+    ///
+    /// # Examples
+    /// ```ignore
+    /// client.set_fee_config(&admin, &FeeConfig {
+    ///     fee_bps: 200,  // 2%
+    ///     schema_version: FEE_CONFIG_SCHEMA_VERSION,
+    /// })?;
+    /// ```
     pub fn set_fee_config(
         env: Env,
         caller: Address,
@@ -996,7 +1044,61 @@ impl RustAcademyContract {
         admin::set_fee_config(&env, &caller, config)
     }
 
-    /// Set per-asset fee configuration (**Admin or Operator only**).
+    /// Set per-asset fee configuration for a specific token (**Admin or Operator only**).
+    ///
+    /// Per-asset overrides take precedence over global fees and oracle pricing for the
+    /// specified token only. This allows fine-grained control (e.g., lower fees for stablecoins,
+    /// higher for volatile assets, or zero fees for specific tokens).
+    ///
+    /// A `fee_bps` of 0 explicitly disables fees for that token, even if global config is non-zero.
+    ///
+    /// # Fee Distribution
+    ///
+    /// When a per-asset config is set, fees can be split into three portions:
+    /// - **Arbiter portion**: `arbiter_bps` or `arbiter_fee` (when arbiter is present in payout)
+    /// - **Platform portion**: `platform_fee` (to platform wallet)
+    /// - **Collector portion**: `collector_fee` (to active fee collector)
+    ///
+    /// **Legacy arbiter_bps** (simpler):
+    /// - `arbiter_bps` = percentage of total fee for arbiter (0-10000)
+    /// - Remainder goes to collector
+    ///
+    /// **Explicit ratios** (more flexible):
+    /// - `arbiter_fee`, `platform_fee`, `collector_fee` = FeeRatio with numerator/denominator
+    /// - When any explicit ratio is set, the legacy `arbiter_bps` is ignored
+    /// - Ratios must sum to ≤ 1.0 or the function returns `FeeSplitExceedsTotal`
+    ///
+    /// # Examples
+    ///
+    /// Simple per-asset override (2% fee for XLM):
+    /// ```ignore
+    /// client.set_per_asset_fee(&admin, &xlm_token, &PerAssetFeeConfig {
+    ///     fee_bps: 200,
+    ///     arbiter_bps: 0,
+    ///     ..Default::default()
+    /// })?;
+    /// ```
+    ///
+    /// With arbiter split (1% fee, 25% to arbiter):
+    /// ```ignore
+    /// client.set_per_asset_fee(&admin, &token, &PerAssetFeeConfig {
+    ///     fee_bps: 100,
+    ///     arbiter_bps: 2500,  // 25% of fee
+    ///     ..Default::default()
+    /// })?;
+    /// ```
+    ///
+    /// With explicit splits (0.5% fee: 40% arbiter, 30% platform, 30% collector):
+    /// ```ignore
+    /// client.set_per_asset_fee(&admin, &token, &PerAssetFeeConfig {
+    ///     fee_bps: 50,
+    ///     arbiter_bps: 0,  // Ignored when explicit ratios are set
+    ///     arbiter_fee: FeeRatio { numerator: 2, denominator: 5 },
+    ///     platform_fee: FeeRatio { numerator: 3, denominator: 10 },
+    ///     collector_fee: FeeRatio { numerator: 3, denominator: 10 },
+    ///     schema_version: PER_ASSET_FEE_SCHEMA_VERSION,
+    /// })?;
+    /// ```
     pub fn set_per_asset_fee(
         env: Env,
         caller: Address,
@@ -1007,7 +1109,19 @@ impl RustAcademyContract {
         admin::set_per_asset_fee(&env, &caller, token, config)
     }
 
-    /// Get per-asset fee configuration for a token.
+    /// Get per-asset fee configuration for a token (read-only).
+    ///
+    /// Returns `Some(config)` if a per-asset override has been set for this token,
+    /// or `None` if this token uses the global fee config or oracle pricing.
+    ///
+    /// # Examples
+    /// ```ignore
+    /// if let Some(per_asset_config) = client.get_per_asset_fee(&token) {
+    ///     println!("XLM fee: {}%", per_asset_config.fee_bps / 100);
+    /// } else {
+    ///     println!("XLM uses global fee or oracle pricing");
+    /// }
+    /// ```
     pub fn get_per_asset_fee(env: Env, token: Address) -> Option<PerAssetFeeConfig> {
         storage::get_per_asset_fee(&env, &token)
     }
@@ -1237,9 +1351,9 @@ impl RustAcademyContract {
         stealth::get_stealth_status(&env, &stealth_address)
     }
 
-    /// Upgrade the contract to a new WASM implementation (**Admin only**).
+    /// Upgrade the contract to a new WASM implementation (**Governance only**).
     ///
-    /// Caller must have the [`Role::Admin`] role and authorize.
+    /// Caller must have the [`Role::Governance`] role and authorize.
     /// The new WASM must be pre-uploaded to the network.
     /// Emits an upgrade event for audit.
     ///
@@ -1294,7 +1408,56 @@ impl RustAcademyContract {
         storage::get_upgrade_window(&env)
     }
 
-    /// Start an upgrade during the active upgrade window (**Admin only**).
+    /// Enable or disable the upgrade gate master switch (**Governance only**).
+    ///
+    /// When disabled, `start_upgrade` is blocked regardless of the configured
+    /// upgrade window.  Defaults to enabled when never explicitly set.
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment
+    /// * `caller` - Caller address (must have Governance role)
+    /// * `enabled` - `true` to enable upgrades, `false` to disable
+    ///
+    /// # Errors
+    /// * `InsufficientRole` - Caller does not have Governance role
+    pub fn set_upgrade_gate(
+        env: Env,
+        caller: Address,
+        enabled: bool,
+    ) -> Result<(), RustAcademyError> {
+        admin::require_governance(&env, &caller)?;
+        storage::set_upgrade_gate_enabled(&env, enabled);
+        Ok(())
+    }
+
+    /// Validate whether the current contract state is safe for an upgrade.
+    ///
+    /// Returns an [`UpgradeSafetyReport`] that breaks down each precondition.
+    /// This is a read-only view; no authorization required.
+    pub fn check_upgrade_safety(env: Env) -> types::UpgradeSafetyReport {
+        storage::check_upgrade_safety(&env)
+    }
+
+    /// Get the pre-upgrade invariant snapshot (read-only view).
+    ///
+    /// Returns the snapshot of critical invariants taken before the upgrade began.
+    /// Returns `None` if no snapshot exists (e.g., for legacy upgrades).
+    /// This is a read-only view; no authorization required.
+    pub fn get_invariant_snapshot(env: Env) -> Option<storage::InvariantSnapshot> {
+        env.storage()
+            .persistent()
+            .get(&storage::DataKey::PreUpgradeInvariantSnapshot)
+    }
+
+    /// Return the current upgrade gate status.
+    ///
+    /// Combines window, in-progress, and gate-enabled flags into a single
+    /// [`UpgradeState`] snapshot.  This is a read-only view.
+    pub fn get_upgrade_status(env: Env) -> types::UpgradeState {
+        metadata::upgrade_state(&env)
+    }
+
+    /// Start an upgrade during the active upgrade window (**Governance only**).
     ///
     /// Sets the contract into upgrade-in-progress state and emits `UpgradeStarted` event.
     /// Must be followed by calling `upgrade()` and then `complete_upgrade()`.
@@ -1303,7 +1466,7 @@ impl RustAcademyContract {
     ///
     /// # Arguments
     /// * `env` - The contract environment
-    /// * `caller` - Caller address (must be admin)
+    /// * `caller` - Caller address (must have Governance role)
     /// * `new_version` - The target contract version
     /// * `new_wasm_hash` - The target WASM hash
     ///
@@ -1319,19 +1482,19 @@ impl RustAcademyContract {
         admin::start_upgrade(&env, &caller, new_version, new_wasm_hash)
     }
 
-    /// Cancel a pending upgrade and clear gating state (**Admin only**).
+    /// Cancel a pending upgrade and clear gating state (**Governance only**).
     pub fn cancel_upgrade(env: Env, caller: Address) -> Result<(), RustAcademyError> {
         admin::cancel_upgrade(&env, &caller)
     }
 
-    /// Complete an upgrade after WASM swap (**Admin only**).
+    /// Complete an upgrade after WASM swap (**Governance only**).
     ///
     /// Runs migration logic and validates post-upgrade invariants (Issue #432 AC2).
     /// Emits `UpgradeCompleted` event. Must be called after `start_upgrade()` and `upgrade()`.
     ///
     /// # Arguments
     /// * `env` - The contract environment
-    /// * `caller` - Caller address (must be admin)
+    /// * `caller` - Caller address (must have Governance role)
     /// * `new_version` - The target version (0 = auto-detect from migration)
     ///
     /// # Returns

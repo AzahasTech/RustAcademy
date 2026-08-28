@@ -101,6 +101,9 @@ fn apply_admin_transfer(env: &Env, old_admin: &Address, new_admin: &Address) {
 }
 
 /// Require that the caller has at least one of the specified roles.
+///
+/// Validates initialization, authorizes the caller, and verifies that at least
+/// one of the requested roles is present in the caller's role set.
 pub fn require_any_role(
     env: &Env,
     caller: &Address,
@@ -109,7 +112,6 @@ pub fn require_any_role(
     require_initialized(env)?;
 
     caller.require_auth();
-    let _ = current_admin(env)?;
     let user_roles = storage::get_roles(env, caller);
     for role in roles {
         if user_roles.contains(*role) {
@@ -122,6 +124,16 @@ pub fn require_any_role(
 /// Require that the caller is an Admin.
 pub fn require_admin(env: &Env, caller: &Address) -> Result<(), RustAcademyError> {
     require_any_role(env, caller, &[Role::Admin])
+}
+
+/// Require that the caller has Governance-level authority.
+///
+/// Governance authority is strictly higher-privilege than Admin for
+/// protocol-changing decisions. Separating these concerns ensures that
+/// routine operational admin actions cannot accidentally trigger
+/// governance-only flows (emergency mode, upgrades).
+pub fn require_governance(env: &Env, caller: &Address) -> Result<(), RustAcademyError> {
+    require_any_role(env, caller, &[Role::Governance])
 }
 
 /// Grant a role to an address (**Admin only**).
@@ -251,6 +263,8 @@ pub fn clear_roles(env: &Env, caller: Address, target: Address) -> Result<(), Ru
 }
 
 /// Set the paused state (**Admin or Operator only**).
+///
+/// Toggling the global pause flag is an operational action.
 pub fn set_paused(env: &Env, caller: Address, new_state: bool) -> Result<(), RustAcademyError> {
     require_any_role(env, &caller, &[Role::Admin, Role::Operator])?;
 
@@ -316,6 +330,27 @@ pub fn migrate(env: &Env, caller: &Address) -> Result<u32, RustAcademyError> {
 fn migrate_legacy_to_v1(env: &Env) -> u32 {
     storage::set_contract_version(env, storage::CURRENT_CONTRACT_VERSION);
     storage::set_initialized(env, true);
+
+    // Migrate FeeConfig schema version if it exists
+    let key = storage::DataKey::FeeConfig;
+    if let Some(mut fee_cfg) = env.storage().persistent().get(&key) {
+        storage::migrate_fee_config(&mut fee_cfg);
+        env.storage().persistent().set(&key, &fee_cfg);
+        storage::set_or_extend_ttl(env, &key, storage::RecordType::FeeConfig);
+    }
+
+    // Migrate OracleFeeConfig schema version if it exists
+    let key = storage::DataKey::OracleFeeConfig;
+    if let Some(mut oracle_cfg) = env.storage().persistent().get(&key) {
+        storage::migrate_oracle_fee_config(&mut oracle_cfg);
+        env.storage().persistent().set(&key, &oracle_cfg);
+        storage::set_or_extend_ttl(env, &key, storage::RecordType::FeeConfig);
+    }
+
+    // Note: EscrowEntry and StealthEscrowEntry records are migrated on-read
+    // via the schema_version field check in get_escrow/get_stealth_escrow.
+    // PerAssetFeeConfig records are migrated on-write via set_per_asset_fee.
+
     storage::CURRENT_CONTRACT_VERSION
 }
 
@@ -342,15 +377,24 @@ pub fn set_upgrade_window(
 
 /// Start an upgrade (enters gating state; requires active window).
 ///
-/// **Admin only**. Emits `UpgradeStarted` event with old/new versions.
+/// **Governance only**. Emits `UpgradeStarted` event with old/new versions.
 /// Blocks if window is not active or upgrade already in progress.
+/// Protected against re-entry attacks (Issue #554).
 pub fn start_upgrade(
     env: &Env,
     caller: &Address,
     new_version: u32,
     new_wasm_hash: BytesN<32>,
 ) -> Result<(), RustAcademyError> {
-    require_admin(env, caller)?;
+    require_governance(env, caller)?;
+
+    // Re-entry protection (Issue #554)
+    crate::hook::assert_not_reentrant(env)?;
+
+    // Check upgrade gate master switch (Issue #318)
+    if !storage::is_upgrade_gate_enabled(env) {
+        return Err(RustAcademyError::UpgradeWindowNotActive);
+    }
 
     // Check upgrade window is active (Issue #432 AC1)
     if !storage::is_upgrade_window_active(env) {
@@ -361,8 +405,17 @@ pub fn start_upgrade(
         return Err(RustAcademyError::UpgradeAlreadyInProgress);
     }
 
+    // Prevent repeated-init misuse (Issue #554)
+    if !storage::is_initialized(env) {
+        return Err(RustAcademyError::Unauthorized);
+    }
+
     let old_version = get_version(env);
     let (window_start, window_end) = storage::get_upgrade_window(env);
+    
+    // Snapshot pre-upgrade invariants for drift detection (Issue #554)
+    storage::snapshot_pre_upgrade_invariants(env)?;
+
     if let Some(current_hash) = storage::get_wasm_hash(env) {
         storage::set_pending_upgrade_rollback_wasm_hash(env, &current_hash);
     } else {
@@ -386,21 +439,26 @@ pub fn start_upgrade(
     Ok(())
 }
 
-/// Perform the WASM swap (**Admin only**).
+/// Perform the WASM swap (**Governance only**).
 ///
 /// Must be called during an active upgrade window and while an upgrade is in progress.
 /// The provided WASM hash must match the one recorded during `start_upgrade`.
+/// Protected against re-entry attacks (Issue #554).
 pub fn upgrade(
     env: &Env,
     caller: &Address,
     new_wasm_hash: BytesN<32>,
 ) -> Result<(), RustAcademyError> {
-    require_admin(env, caller)?;
+    require_governance(env, caller)?;
+
+    // Re-entry protection (Issue #554)
+    crate::hook::assert_not_reentrant(env)?;
 
     if !storage::is_upgrade_in_progress(env) {
         return Err(RustAcademyError::UpgradeNotInProgress);
     }
 
+    // Strengthened window validation (Issue #554)
     if !storage::is_upgrade_window_active(env) {
         return Err(RustAcademyError::UpgradeWindowNotActive);
     }
@@ -424,9 +482,14 @@ pub fn upgrade(
     Ok(())
 }
 
-/// Cancel a pending upgrade and clear gating state (**Admin only**).
+/// Cancel a pending upgrade and clear gating state (**Governance only**).
+/// Protected against re-entry attacks (Issue #554).
 pub fn cancel_upgrade(env: &Env, caller: &Address) -> Result<(), RustAcademyError> {
-    require_admin(env, caller)?;
+    require_governance(env, caller)?;
+
+    // Re-entry protection (Issue #554)
+    crate::hook::assert_not_reentrant(env)?;
+
     if let Some(rollback_hash) = storage::get_pending_upgrade_rollback_wasm_hash(env) {
         storage::set_wasm_hash(env, &rollback_hash);
 
@@ -440,15 +503,26 @@ pub fn cancel_upgrade(env: &Env, caller: &Address) -> Result<(), RustAcademyErro
 
 /// Complete an upgrade (migrate state, update version, emit event).
 ///
-/// **Admin only**. Must be called after `start_upgrade` and `upgrade` to finalize.
+/// **Governance only**. Must be called after `start_upgrade` and `upgrade` to finalize.
 /// Calls `migrate()` internally and re-checks invariants.
+/// Protected against re-entry attacks (Issue #554).
 pub fn complete_upgrade(
     env: &Env,
     caller: &Address,
     new_version: u32,
 ) -> Result<u32, RustAcademyError> {
+    // Governance authorization is enforced at start_upgrade entry;
+    // migrate() re-checks admin access internally.
+    crate::hook::assert_not_reentrant(env)?;
+
     if !storage::is_upgrade_in_progress(env) {
         return Err(RustAcademyError::UpgradeNotInProgress);
+    }
+
+    // Check upgrade window is still active (Issue #554)
+    // Prevent completing upgrades after the window expires
+    if !storage::is_upgrade_window_active(env) {
+        return Err(RustAcademyError::UpgradeWindowNotActive);
     }
 
     // Verify version and hash (Issue #432 AC2)
@@ -470,6 +544,14 @@ pub fn complete_upgrade(
     }
 
     let old_version = get_version(env);
+
+    // Check for invariant drift BEFORE migrate (Issue #554)
+    // This ensures we detect drift caused by the upgrade itself
+    if let Err(_drift_error) = storage::check_invariant_drift(env) {
+        // Clear pending state on drift detection to force rollback
+        storage::clear_pending_upgrade(env);
+        return Err(RustAcademyError::InternalError);
+    }
 
     // Run migration
     let migrated_version = migrate(env, caller)?;
@@ -613,6 +695,20 @@ pub fn set_pause_flags(
 }
 
 /// Set fee configuration (**Admin or Operator only**).
+///
+/// Sets the global fee applied to all tokens unless overridden by per-asset configuration.
+/// Fee is expressed in basis points: 1 = 0.01%, 100 = 1%, 10000 = 100%.
+///
+/// This is a fallback; per-asset overrides (via [`set_per_asset_fee`]) take precedence.
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `caller` - Address requesting the change (must have Admin or Operator role)
+/// * `config` - New fee configuration
+///
+/// # Errors
+/// - `InsufficientRole` if caller lacks required role
+/// - `ContractPaused` if admin pause flag is enabled
 pub fn set_fee_config(
     env: &Env,
     caller: &Address,
@@ -620,12 +716,56 @@ pub fn set_fee_config(
 ) -> Result<(), RustAcademyError> {
     require_any_role(env, caller, &[Role::Admin, Role::Operator])?;
 
+    if config.fee_bps > 10_000 {
+        return Err(RustAcademyError::InvalidAmount);
+    }
+
     storage::set_fee_config(env, &config);
     crate::events::publish_fee_config_changed(env, config.fee_bps);
     Ok(())
 }
 
-/// Set per-asset fee configuration (**Admin or Operator only**).
+/// Set per-asset fee configuration for a specific token (**Admin or Operator only**).
+///
+/// Overrides the global fee for a specific token. Highest priority in fee resolution:
+/// 1. Per-asset override (this) — if set
+/// 2. Oracle dynamic pricing — if configured and fresh
+/// 3. Global static fee — fallback
+///
+/// Setting `fee_bps = 0` explicitly disables fees for that token.
+///
+/// # Fee Splits
+///
+/// **Legacy (arbiter_bps)**: Simple percentage split
+/// - `arbiter_bps > 0` → that % of fee goes to arbiter (if arbiter present in payout)
+/// - Remainder to collector
+///
+/// **Explicit (FeeRatio)**: Fine-grained control
+/// - Set `arbiter_fee`, `platform_fee`, or `collector_fee` with FeeRatio
+/// - When any explicit ratio is set, legacy `arbiter_bps` is ignored
+/// - Sum of ratios must not exceed 1.0
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `caller` - Address requesting the change (must have Admin or Operator role)
+/// * `token` - Token address to configure
+/// * `config` - Per-asset fee configuration
+///
+/// # Errors
+/// - `InsufficientRole` if caller lacks required role
+/// - `InvalidAmount` if fee_bps or arbiter_bps > 10000
+/// - `FeeSplitExceedsTotal` if explicit ratios sum to > 1.0
+/// - Other validation errors from `PerAssetFeeConfig::validate()`
+///
+/// # Examples
+/// Set 1.5% fee for USDC with no arbiter split:
+/// ```ignore
+/// set_per_asset_fee(env, caller, &usdc_token, &PerAssetFeeConfig {
+///     fee_bps: 150,
+///     arbiter_bps: 0,
+///     ..Default::default()
+/// })?;
+/// ```
 pub fn set_per_asset_fee(
     env: &Env,
     caller: &Address,
@@ -684,7 +824,7 @@ pub fn rotate_fee_collector(
 ) -> Result<u32, RustAcademyError> {
     require_admin(env, caller)?;
 
-    let next_index = fee_router::rotate_collector(env, &new_collector);
+    let next_index = fee_router::rotate_collector(env, &new_collector)?;
     publish_fee_collector_rotated(env, new_collector, next_index);
     Ok(next_index)
 }
