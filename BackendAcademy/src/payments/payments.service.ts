@@ -132,14 +132,10 @@ export class PaymentsService {
   /** Base backoff for webhook retries (Issue #412). */
   private readonly webhookBaseBackoffMs: number;
   /** Cap for webhook retry backoff (Issue #412). */
-  private readonly defaultTimeoutMs: number;
-  private readonly webhookMaxRetries: number;
-  private readonly webhookBaseBackoffMs: number;
   private readonly webhookMaxBackoffMs: number;
 
   constructor(
     private readonly databaseService: DatabaseService,
-    private readonly configService?: ConfigService,
     @Optional()
     private readonly contractAdapter?: IContractAdapter,
     @Optional()
@@ -313,12 +309,16 @@ export class PaymentsService {
           this.logger.log(
             `Webhook ${webhook.id} delivered on attempt ${attempt}`,
           );
+          // Mark the durable outbox as delivered so its terminal state stays
+          // inspectable (the enqueue-before-deliver contract from #666).
+          await this.databaseService.completeWebhookDelivery(webhook.id, statusCode);
           return { success: true, attempts: attempt };
         }
         lastError = `HTTP ${statusCode}`;
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
       }
+    }
 
     // Drive the delivery to a terminal state through the durable outbox,
     // honouring the exponential-backoff schedule stored on the record.
