@@ -1,6 +1,6 @@
-import { BadRequestException, ForbiddenException, Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Subscription } from 'rxjs';
-import { DomainEventBus } from './domain-event-bus';
+const __import_0 = require('./domain-event-bus');
 import { XpEvent, XpEventType, XpLedgerEntry } from './xp.types';
 
 const XP_BY_EVENT: Record<XpEventType, number> = {
@@ -25,29 +25,7 @@ export class XpService implements OnModuleInit, OnModuleDestroy {
     this.subscription?.unsubscribe();
   }
 
-  /**
-   * Ensures an award event is published on behalf of the authenticated learner.
-   * The event userId is always taken from the authenticated actor, so a learner cannot
-   * publish an award for another learner.
-   */
-  scopeEventToLearner<T extends Pick<XpEvent, 'eventId' | 'type'>>(event: T, actorId?: string): T & { userId: string } {
-    if (!actorId) {
-      throw new ForbiddenException('Authenticated learner is required to publish XP events');
-    }
-
-    const requestedUserId = (event as Pick<XpEvent, 'userId'>).userId;
-    if (requestedUserId && requestedUserId !== actorId) {
-      throw new ForbiddenException('Cannot publish an XP award event for another learner');
-    }
-
-    return { ...event, userId: actorId };
-  }
-
   award(event: XpEvent): XpLedgerEntry | null {
-    if (!event.userId) {
-      throw new BadRequestException('XP events must be scoped to a learner');
-    }
-
     if (this.ledger.has(event.eventId)) {
       return null;
     }

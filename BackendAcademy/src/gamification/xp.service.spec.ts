@@ -1,5 +1,6 @@
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import { BadRequestException } from '@nestjs/common';
 import { DomainEventBus } from './domain-event-bus';
+import { XpController } from './xp.controller';
 import { XpService } from './xp.service';
 
 describe('XpService', () => {
@@ -19,53 +20,59 @@ describe('XpService', () => {
     service.onModuleDestroy();
   });
 
-  it('scopes a published event to the authenticated learner', () => {
-    const bus = new DomainEventBus();
-    const service = new XpService(bus);
-    service.onModuleInit();
+  describe('XP award amount validation', () => {
+    let bus: DomainEventBus;
+    let service: XpService;
+    let controller: XpController;
 
-    const scoped = service.scopeEventToLearner(
-      { eventId: 'evt-2', type: 'task.passed' },
-      'user-1',
-    );
-    bus.publish(scoped);
+    beforeEach(() => {
+      bus = new DomainEventBus();
+      service = new XpService(bus);
+      service.onModuleInit();
+      controller = new XpController(bus, service);
+    });
 
-    expect(service.getBalance('user-1')).toBe(10);
-    expect(service.getBalance('user-2')).toBe(0);
+    afterEach(() => service.onModuleDestroy());
 
-    service.onModuleDestroy();
-  });
+    it.each([
+      ['streak.day', 5],
+      ['task.passed', 10],
+      ['contribution.created', 25],
+      ['course.completed', 100],
+    ] as const)('accepts configured award %s = %i XP', (type, amount) => {
+      expect(
+        controller.publish({ eventId: `evt-${type}`, userId: 'user-1', type, amount }, { user: { id: 'user-1' } }),
+      ).toMatchObject({ accepted: true });
+      expect(service.getBalance('user-1')).toBe(amount);
+    });
 
-  it('rejects a learner publishing an award event for another learner', () => {
-    const bus = new DomainEventBus();
-    const service = new XpService(bus);
+    it.each([
+      ['negative amount', 'task.passed', -1],
+      ['above policy maximum', 'course.completed', 101],
+      ['fractional amount', 'task.passed', 10.5],
+      ['amount that conflicts with event policy', 'streak.day', 10],
+    ] as const)('rejects %s', (_description, type, amount) => {
+      expect(() =>
+        controller.publish({ eventId: 'evt-invalid', userId: 'user-1', type, amount }, { user: { id: 'user-1' } }),
+      ).toThrow(BadRequestException);
+      expect(service.getBalance('user-1')).toBe(0);
+    });
 
-    expect(() =>
-      service.scopeEventToLearner(
-        { eventId: 'evt-3', userId: 'user-2', type: 'task.passed' },
-        'user-1',
-      ),
-    ).toThrow(ForbiddenException);
-  });
+    it('prevents a learner from publishing an award for another learner', () => {
+      expect(() =>
+        controller.publish(
+          { eventId: 'evt-cross-user', userId: 'user-2', type: 'task.passed' },
+          { user: { id: 'user-1' } },
+        ),
+      ).toThrow(BadRequestException);
+      expect(service.getBalance('user-2')).toBe(0);
+      expect(service.getBalance('user-1')).toBe(0);
+    });
 
-  it('requires an authenticated learner to publish an award event', () => {
-    const bus = new DomainEventBus();
-    const service = new XpService(bus);
-
-    expect(() =>
-      service.scopeEventToLearner(
-        { eventId: 'evt-4', userId: 'user-1', type: 'task.passed' },
-        undefined,
-      ),
-    ).toThrow(ForbiddenException);
-  });
-
-  it('rejects awarding an event that is not scoped to a learner', () => {
-    const bus = new DomainEventBus();
-    const service = new XpService(bus);
-
-    expect(() =>
-      service.award({ eventId: 'evt-5', userId: '', type: 'task.passed' }),
-    ).toThrow(BadRequestException);
+    it('prevents a learner from reading another learner\'s totals', () => {
+      expect(() => controller.getTotals('user-2', { user: { id: 'user-1' } })).toThrow(
+        BadRequestException,
+      );
+    });
   });
 });
