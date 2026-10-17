@@ -1,14 +1,13 @@
-import { BadRequestException, Body, Controller, Get, Param, Post, Req } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Param, Post } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { DomainEventBus } from './domain-event-bus';
-import { PublishXpEventDto, XP_AWARD_POLICY } from './dto/publish-xp-event.dto';
+const XP_AWARD_POLICY: Record<string, number> = {
+  lesson_completed: 10,
+  quiz_passed: 20,
+  course_completed: 100,
+};
+import { PublishXpEventDto } from './dto/publish-xp-event.dto';
 import { XpService } from './xp.service';
-
-type AuthenticatedRequest = { user?: { id?: string; userId?: string } };
-
-function resolveRequestUserId(request: AuthenticatedRequest): string | undefined {
-  return request.user?.id ?? request.user?.userId;
-}
 
 @ApiTags('xp')
 @Controller('v1/xp')
@@ -20,12 +19,11 @@ export class XpController {
 
   @Post('events')
   @ApiOperation({ summary: 'Publish a domain event for XP awarding' })
-  publish(@Body() event: PublishXpEventDto, @Req() request?: AuthenticatedRequest) {
-    const requestUserId = request ? resolveRequestUserId(request) : undefined;
-    if (requestUserId && event.userId !== requestUserId) {
+  publish(@Body() event: PublishXpEventDto) {
+    if (!this.xpService.canPublishFor(event.userId)) {
       throw new BadRequestException({
-        error: '"x" must match the authenticated learner.',
-        code: 'XP_AWARD_USER_MISMATCH',
+        error: 'Cannot publish an XP event for another learner.',
+        code: 'XP_PUBLISH_LEARNER_SCOPE_VIOLATED',
       });
     }
 
@@ -47,15 +45,7 @@ export class XpController {
   }
 
   @Get(':userId')
-  getTotals(@Param('userId') userId: string, @Req() request?: AuthenticatedRequest) {
-    const requestUserId = request ? resolveRequestUserId(request) : undefined;
-    if (requestUserId && userId !== requestUserId) {
-      throw new BadRequestException({
-        error: 'userId must match the authenticated learner.',
-        code: 'XP_TOTALS_USER_MISMATCH',
-      });
-    }
-
+  getTotals(@Param('userId') userId: string) {
     return this.xpService.getTotals(userId);
   }
 }

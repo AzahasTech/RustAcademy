@@ -1,6 +1,7 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Subscription } from 'rxjs';
-const __import_0 = require('./domain-event-bus');
+
+import { DomainEventBus } from './domain-event-bus';
 import { XpEvent, XpEventType, XpLedgerEntry } from './xp.types';
 
 const XP_BY_EVENT: Record<XpEventType, number> = {
@@ -14,6 +15,7 @@ const XP_BY_EVENT: Record<XpEventType, number> = {
 export class XpService implements OnModuleInit, OnModuleDestroy {
   private readonly ledger = new Map<string, XpLedgerEntry>();
   private subscription?: Subscription;
+  private currentLearnerId?: string;
 
   constructor(private readonly eventBus: DomainEventBus) {}
 
@@ -23,6 +25,45 @@ export class XpService implements OnModuleInit, OnModuleDestroy {
 
   onModuleDestroy(): void {
     this.subscription?.unsubscribe();
+  }
+
+  /**
+   * Determines whether the current caller is allowed to publish an XP event
+   * for the given learner. XP publication is learner-scoped: an event may only be
+   * published for the learner identified by the request context.
+   */
+  canPublishFor(userId: string): boolean {
+    if (!userId || typeof userId !== 'string') {
+      return false;
+    }
+
+    const actorUserId = this.getActorUserId();
+    return actorUserId === userId;
+  }
+
+  /**
+   * Resolves the learner identity for the current publish request. The learner
+   * identity is the only source of truth for whom an award may be issued to.
+   */
+  private getActorUserId(): string | undefined {
+    return this.currentLearnerId;
+  }
+
+  /**
+   * Sets the learner identity for the duration of a request. This is the authoritative
+   * source for who may receive an XP award.
+   */
+  withLearnerContext<T>(
+    userId: string,
+    fn: () => T,
+  ): T {
+    const previous = this.currentLearnerId;
+    this.currentLearnerId = userId;
+    try {
+      return fn();
+    } finally {
+      this.currentLearnerId = previous;
+    }
   }
 
   award(event: XpEvent): XpLedgerEntry | null {
