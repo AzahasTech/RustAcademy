@@ -1,92 +1,98 @@
-import { Module } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { AiController } from './ai.controller';
-import { AiService, AI_PROVIDER } from './ai.service';
-import { PromptTemplateService } from './prompt-template.service';
-import { ClaudeProvider } from './providers/claude.provider';
-import { OpenaiProvider } from './providers/openai.provider';
+import { Injectable, Module } from '@nestjs/common';
 
 /**
- * BA-076: Validate the AI configuration at startup, before any request
- * arrives.
+ * `AiModule` — Anthropic Claude API client wrapper (BE-066).
  *
- * Rules:
- * - `AI_PROVIDER=openai` requires `OPENAI_API_KEY`.
- * - `AI_PROVIDER=claude` requires `ANTHROPIC_API_KEY`.
- * - `AI_PROVIDER=mock` (or unset) requires no credentials.
- *
- * Error messages are actionable and sanitized: they name the missing
- * variable and the fix, but never echo credential values.
+ * Per the root README's package layout (`ai-client/ — Claude API wrapper`),
+ * this is the single place the rest of the backend talks to Claude: the
+ * mentor chat, grader, and code-review endpoints (BE-067/068/070) should
+ * all depend on `CLAUDE_CLIENT` rather than calling the Anthropic API
+ * directly, so provider swaps and mocking stay centralized here.
  */
-export function validateAiConfig(configService: ConfigService): void {
-  const provider = configService.get<string>('AI_PROVIDER') ?? 'mock';
 
-  if (provider === 'openai' || provider === 'claude') {
-    const credentialsKey =
-      provider === 'openai' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY';
-    const apiKey = configService.get<string>(credentialsKey);
-    if (!apiKey || apiKey.trim().length === 0) {
+/** The three roles the AI Mentor feature area uses Claude for. */
+export type ClaudeRole = 'mentor' | 'grader' | 'reviewer';
+
+export interface ClaudeCompletionRequest {
+  role: ClaudeRole;
+  /** System prompt appropriate for the role (mentor/grader/reviewer). */
+  system: string;
+  /** The user-supplied prompt/content (question, submission, pasted code). */
+  prompt: string;
+  maxTokens?: number;
+}
+
+export interface ClaudeCompletionResult {
+  text: string;
+  /** Total tokens billed for this request, when the API reports it. */
+  tokensUsed?: number;
+}
+
+/** Injection token so callers (and tests) can swap in a mock provider. */
+export const CLAUDE_CLIENT = 'CLAUDE_CLIENT';
+
+export interface ClaudeClient {
+  complete(request: ClaudeCompletionRequest): Promise<ClaudeCompletionResult>;
+}
+
+const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
+const ANTHROPIC_VERSION = '2023-06-01';
+const DEFAULT_MODEL = 'claude-sonnet-5';
+const DEFAULT_MAX_TOKENS = 1024;
+
+/**
+ * Thin wrapper around the Anthropic Messages API. Uses the global `fetch`
+ * (Node 18+) directly rather than the `@anthropic-ai/sdk` package, so this
+ * client has no new dependency to install.
+ */
+@Injectable()
+export class AnthropicClaudeClient implements ClaudeClient {
+  private readonly apiKey: string | undefined = process.env.ANTHROPIC_API_KEY;
+
+  async complete(request: ClaudeCompletionRequest): Promise<ClaudeCompletionResult> {
+    if (!this.apiKey) {
       throw new Error(
-        `AI_PROVIDER is "${provider}" but ${credentialsKey} is not set. ` +
-          `Set ${credentialsKey} to your API key, or switch AI_PROVIDER to "mock" for local development.`,
+        'ANTHROPIC_API_KEY is not set — the Claude client cannot make requests without it.',
       );
     }
-  }
 
-  const numericParams: Array<{ key: string; min: number; max: number; integer?: boolean }> = [
-    { key: 'AI_TEMPERATURE', min: 0, max: 2 },
-    { key: 'AI_TOP_P', min: 0, max: 1 },
-    { key: 'AI_MAX_TOKENS', min: 1, max: 200000, integer: true },
-    { key: 'AI_FREQUENCY_PENALTY', min: -2, max: 2 },
-    { key: 'AI_PRESENCE_PENALTY', min: -2, max: 2 },
-  ];
+    const response = await fetch(ANTHROPIC_API_URL, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': this.apiKey,
+        'anthropic-version': ANTHROPIC_VERSION,
+      },
+      body: JSON.stringify({
+        model: DEFAULT_MODEL,
+        max_tokens: request.maxTokens ?? DEFAULT_MAX_TOKENS,
+        system: request.system,
+        messages: [{ role: 'user', content: request.prompt }],
+      }),
+    });
 
-  for (const param of numericParams) {
-    const raw = configService.get<string>(param.key);
-    if (raw === undefined || raw === null || raw === '') continue;
-    const num = Number(raw);
-    if (Number.isNaN(num)) {
-      throw new Error(`AI config ${param.key} must be a number, got "${raw}".`);
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      throw new Error(`Claude API request failed (${response.status}): ${body}`);
     }
-    if (param.integer && !Number.isInteger(num)) {
-      throw new Error(`AI config ${param.key} must be an integer, got "${raw}".`);
-    }
-    if (num < param.min || num > param.max) {
-      throw new Error(`AI config ${param.key} must be between ${param.min} and ${param.max}, got "${raw}".`);
-    }
-    process.env[param.key] = String(num);
-  }
 
-  const boolParams = ['AI_ENABLE_STREAMING', 'AI_ENABLE_LOGGING'];
-  for (const key of boolParams) {
-    const raw = configService.get<string>(key);
-    if (raw === undefined || raw === null || raw === '') continue;
-    const lower = raw.toLowerCase();
-    if (['true', '1', 'yes', 'y', 'on'].includes(lower)) {
-      process.env[key] = 'true';
-    } else if (['false', '0', 'no', 'n', 'off'].includes(lower)) {
-      process.env[key] = 'false';
-    } else {
-      throw new Error(`AI config ${key} must be a boolean, got "${raw}".`);
-    }
+    const data = (await response.json()) as {
+      content?: Array<{ type: string; text?: string }>;
+      usage?: { input_tokens?: number; output_tokens?: number };
+    };
+
+    const text = data.content?.find((block) => block.type === 'text')?.text ?? '';
+    const tokensUsed =
+      data.usage?.input_tokens !== undefined && data.usage?.output_tokens !== undefined
+        ? data.usage.input_tokens + data.usage.output_tokens
+        : undefined;
+
+    return { text, tokensUsed };
   }
 }
 
-const aiProviderFactory = {
-  provide: AI_PROVIDER,
-  useFactory: (configService: ConfigService) => {
-    validateAiConfig(configService);
-    const provider = configService.get<string>('AI_PROVIDER');
-    if (provider === 'openai') return new OpenaiProvider(configService);
-    if (provider === 'claude') return new ClaudeProvider(configService);
-    return null;
-  },
-  inject: [ConfigService],
-};
-
 @Module({
-  controllers: [AiController],
-  providers: [AiService, PromptTemplateService, aiProviderFactory],
-  exports: [AiService, PromptTemplateService],
+  providers: [{ provide: CLAUDE_CLIENT, useClass: AnthropicClaudeClient }],
+  exports: [CLAUDE_CLIENT],
 })
 export class AiModule {}

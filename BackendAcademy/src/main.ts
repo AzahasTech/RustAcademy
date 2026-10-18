@@ -1,112 +1,73 @@
 import { NestFactory } from '@nestjs/core';
-import { NestExpressApplication } from '@nestjs/platform-express';
-import { AppModule } from './app.module';
-import { Logger, VersioningType } from '@nestjs/common';
+import { ValidationPipe, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import { NestExpressApplication } from '@nestjs/platform-express';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
-import { createValidationPipe } from './common/validation.pipe';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import * as envConfig from './config/env.schema';
+import * as express from 'express';
+import { AppModule } from './app.module';
 
-const validationSchema = (envConfig as any).validationSchema ?? (envConfig as any).default;
-
-if (!validationSchema || typeof validationSchema.validate !== 'function') {
-  throw new Error('Missing or invalid environment validation schema in src/config/env.schema.ts');
-}
-
-function validateEnv(): Record<string, unknown> {
-  const { error, value } = validationSchema.validate(process.env, {
-    abortEarly: false,
-    allowUnknown: true,
-    convert: true,
-  });
-  if (error) {
-    const details = error.details.map(detail => detail.message).join('; ');
-    throw new Error(`Invalid environment variables: ${details}`);
-  }
-  return value as Record<string, unknown>;
-}
-
+// Application entry point: creates the Nest app, applies global
+// middleware/pipes, optionally sets up Swagger docs, and starts
+// listening on the configured port.
 async function bootstrap() {
-  const validatedEnv = validateEnv();
-  for (const [key, val] of Object.entries(validatedEnv)) {
-    process.env[key] = String(val);
-  }
-
-  // #662: `rawBody: true` keeps the unparsed request bytes available on
-  // `req.rawBody` so webhook signatures can be verified against exactly what
-  // the provider sent, before any JSON parsing/normalization happens.
-  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
-    rawBody: true,
-  });
   const logger = new Logger('Bootstrap');
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
-  const config = app.get(ConfigService);
-
-  // Security: refuse to start in production with a missing or known default
-  // JWT secret (e.g. the auth module's fallback 'changeme'). The error must
-  // not disclose the secret itself.
-  const nodeEnv = config.get<string>('NODE_ENV', 'development');
-  if (nodeEnv === 'production') {
-    const jwtSecret = config.get<string>('JWT_SECRET');
-    if (!jwtSecret || jwtSecret === 'changeme') {
-      throw new Error(
-        'JWT_SECRET must be set to a secure value when NODE_ENV=production.',
-      );
-    }
-  }
-
-  // Graceful shutdown support
-  app.enableShutdownHooks();
-
-  // Override the internal config with the already-coerced environment values.
-  for (const [key, val] of Object.entries(validatedEnv)) {
-    config.set(key, val);
-  }
-
+  // Sets a range of security-related HTTP headers (CSP, X-Frame-Options,
+  // etc.) on every response.
   app.use(helmet());
+  // Allows cross-origin requests. Note: called with no options here, so
+  // this applies permissive default CORS settings rather than the
+  // fine-grained config (allowed origins/methods/headers) defined in
+  // the app's own "cors" config — that config isn't wired in here.
+  app.enableCors();
+  // Prefixes every route with /api, except routes under "health" (so
+  // liveness/readiness/status checks remain reachable at their bare
+  // paths for monitoring tools that expect them un-prefixed).
+  app.setGlobalPrefix('api', { exclude: ['health'] });
 
-  app.enableCors({
-    origin: config.get<string | string[]>('CORS_ORIGIN', '*'),
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
-    credentials: true,
-  });
+  const configService = app.get(ConfigService);
+  // Enforces a maximum request body size to prevent DoS attacks from
+  // oversized payloads. Defaults to 1MB; configurable via MAX_BODY_SIZE
+  // env var (e.g., '5mb', '10mb'). Requests exceeding this limit return
+  // HTTP 413 (Payload Too Large) with a clear error message.
+  const maxBodySize = configService.get<string>('MAX_BODY_SIZE', '1mb');
+  app.use(express.json({ limit: maxBodySize }));
 
-  app.enableVersioning({
-    type: VersioningType.URI,
-    prefix: 'api/v',
-    defaultVersion: '1',
-  });
-
-  // Shared options (src/common/validation.pipe.ts) guarantee nested DSos
-  // and arrays are validated — and malformed payloads rejected — the same
-  // way in every controller.
-  app.useGlobalPipes(createValidationPipe());
-
-  const swaggerConfig = new DocumentBuilder()
-    .setTitle('RustAcademy API')
-    .setDescription('The RustAcademy Backend API')
-    .setVersion('1.0')
-    .addBearerAuth()
-    .build();
-  const document = SwaggerModule.createDocument(app, swaggerConfig);
-  SwaggerModule.setup('api/docs', app, document);
-
-  const staticDir = path.resolve(
-    config.get<string>('ASSETS_STATIC_DIR', './public'),
+  // Global validation pipe applied to all incoming request bodies/params:
+  //  - whitelist: strips properties not defined on the target DTO
+  //  - transform: converts payloads into instances of their DTO classes
+  //  - forbidNonWhitelisted: rejects requests containing any property
+  //    not defined on the DTO (rather than silently dropping them)
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true,
+      forbidNonWhitelisted: true,
+    }),
   );
-  try {
-    fs.mkdirSync(staticDir, { recursive: true });
-    app.useStaticAssets(staticDir, { prefix: '/static/' });
-    logger.log(`Static assets served from ${staticDir} at /static/`);
-  } catch (err) {
-    logger.warn(`Failed to mount static asset directory ${staticDir}: ${err instanceof Error ? err.message : String(err)}`);
+  // Swagger docs default to enabled unless explicitly turned off via
+  // the SWAGGER_ENABLED env var.
+  const swaggerEnabled = configService.get<string>('SWAGGER_ENABLED', 'true') === 'true';
+  if (swaggerEnabled) {
+    // Builds the OpenAPI document metadata (title/description/version)
+    // and enables Bearer token auth in the generated docs UI.
+    const config = new DocumentBuilder()
+      .setTitle('RustAcademy BackendAcademy API')
+      .setDescription('NestJS backend API for RustAcademy — learn Rust, earn XLM, build Web3.')
+      .setVersion('0.1')
+      .addBearerAuth()
+      .build();
+    const document = SwaggerModule.createDocument(app, config);
+    // Serves the interactive Swagger UI at /api/docs.
+    SwaggerModule.setup('api/docs', app, document);
   }
 
-  const port = config.get<number>('PORT', 3000);
+  // Reads the port from config (defaulting to 4001) and starts the server.
+  const port = Number(configService.get<string>('PORT', '4001'));
   await app.listen(port);
-  logger.log(`Backend running on http://localhost:${port}`);
+  logger.log(`BackendAcademy API listening on http://localhost:${port}/api`);
 }
+
 bootstrap();

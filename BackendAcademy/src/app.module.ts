@@ -1,109 +1,62 @@
-import { Module, MiddlewareConsumer, NestModule, ValidationPipe } from '@nestjs/common';
-import { APP_GUARD, APP_FILTER, APP_INTERCEPTOR, APP_PIPE } from '@nestjs/core';
-import { ThrottleGuard, ThrottleModule } from '@nestjs/throttler';
+import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import { APP_GUARD } from '@nestjs/core';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
-import { AdminModule } from './admin/admin.module';
-import { AuthModule } from './auth/auth.module';
-import { BadgesModule } from './badges/badges.module';
-import { ChallengesModule } from './challenges/challenges.module';
+import { HealthController } from './health/health.controller';
+import { GamificationModule } from './gamification/gamification.module';
+import { GradingModule } from './grading/grading.module';
 import { ChatModule } from './chat/chat.module';
-import { RewardsModule } from './rewards/rewards.module';
-import { SecurityModule } from './security/security.module';
-import { SubmissionModule } from './submissions/submission.module';
-import { UsersModule } from './users/users.module';
-import { TutorProfileModule } from './users/tutor-profile.module';
-import { ContractsModule } from './contracts/contracts.module';
-import { UserProfileModule } from './users/user-profile.module';
-import { AppConfigModule } from './config/config.module';
-import { AssetsModule } from './assets/assets.module';
-import { DatabaseModule } from './database/database.module';
-import { DlqModule } from './dead-letter-queue/dlq.module';
-import { PathfindingModule } from './pathfinding/pathfinding.module';
-import { MonitoringModule } from './monitoring/monitoring.module';
-import { SearchModule } from './search/search.module';
-import { PaymentsModule } from './payments/payments.module';
-import { I18nModule } from './i18n/i18n.module';
-import { NotificationsModule } from './notifications/notifications.module';
-import { HealthModule } from './health/health.module';
-import { CorrelationIDMiddleware } from './common/correlation-id.middleware';
-import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
-import { TransformInterceptor } from './common/interceptors/transform.interceptor';
-import { AiModule } from './ai/ai.module';
-import { JobsModule } from './jobs/jobs.module';
-import { LeaderboardModule } from './leaderboard/leaderboard.module';
-import { AnalyticsModule } from './analytics/analytics.module';
-import { WalletModule } from './wallet/wallet.module';
 import { SocialModule } from './social/social.module';
-import { OnboardingModule } from './onboarding/onboarding.module';
-import { LessonModule } from './lessons/lesson.module';
-import { TaskModule } from './tasks/task.module';
-import { CourseModule } from './courses/course.module';
-import { LoggingModule } from './logging/logging.module';
-import { ProgressModule } from './courses/progress/progress.module';
-import { RedisModule } from './redis/redis.module';
-import { ReportsModule } from './reports/reports.module';
-import { SessionsModule } from './sessions/sessions.module';
-import { AuditModule } from './audit/audit.module';
-import { HintsModule } from './hints/hint.module';
+import { StellarModule } from './stellar/stellar.module';
+import { SandboxModule } from './sandbox/sandbox.module';
+import { ProgressModule } from './progress/progress.module';
+import { CoursesModule } from './courses/courses.module';
+import { CertificatesModule } from './certificates/certificates.module';
 
+// Root application module: wires together global configuration/guards,
+// every feature module, and the top-level controllers/providers.
 @Module({
   imports: [
-    AppConfigModule,
-    ThrottlerModule.forRoot([{ ttl: 60000, limit: 10 }]),
-    DatabaseModule,
-    RedisModule,
-    AuthModule,
-    ContractsModule,
-    AdminModule,
-    BadgesModule,
+    // Loads environment variables and makes ConfigService available
+    // app-wide (isGlobal: true) without needing to re-import
+    // ConfigModule in every feature module.
+    ConfigModule.forRoot({ isGlobal: true }),
+    // Configures global rate limiting: by default, 100 requests per
+    // 60-second window per client, both overridable via env vars.
+    // Combined with APP_GUARD below, this applies to every route unless
+    // a controller/route opts out or overrides it (e.g. via @Throttle
+    // or @SkipThrottle).
+    ThrottlerModule.forRoot([
+      {
+        name: 'default',
+        ttl: Number(process.env.THROTTLE_TTL_MS ?? 60000),
+        limit: Number(process.env.THROTTLE_LIMIT ?? 100),
+      },
+    ]),
+    // Feature modules, each encapsulating its own controllers/providers
+    // for a specific domain of the app.
+    GamificationModule,
+    GradingModule,
     ChatModule,
-    UsersModule,
-    ContractsModule,
-    RedisModule,
-    AuditModule,
-    UserProfileModule,
-    TutorProfileModule,
-    SubmissionModule,
-    RewardsModule,
-    SecurityModule,
-    ChallengesModule,
-    AiModule,
-    LeaderboardModule,
-    AnalyticsModule,
-    WalletModule,
     SocialModule,
-    OnboardingModule,
-    LessonModule,
-    TaskModule,
-    CourseModule,
+    StellarModule,
+    SandboxModule,
     ProgressModule,
-    SessionsModule,
-    ReportsModule,
-    JobsModule,
-    DlqModule,
-    AssetsModule,
-    LoggingModule,
-    PathfindingModule,
-    MonitoringModule,
-    SearchModule,
-    PaymentsModule,
-    I18nModule,
-    NotificationsModule,
-    HealthModule,
-    HintsModule,
+    CoursesModule,
+    CertificatesModule,
   ],
-  controllers: [AppController],
+  // Top-level controllers not owned by a specific feature module:
+  // AppController (root/basic routes) and HealthController
+  // (liveness/readiness/status endpoints).
+  controllers: [AppController, HealthController],
   providers: [
     AppService,
-    { provide: APP_GUARD, useClass: ThrottleGuard },
-    { provide: APP_FILTER, useClass: AllExceptionsFilter },
-    { provide: APP_INTERCEPTOR, useClass: TransformInterceptor },
-    { provide: APP_PIPE, useValue: new ValidationPipe({ transform: true }) },
+    // Registers ThrottlerGuard as a global guard (via the APP_GUARD
+    // token), so the rate limiting configured above is actually
+    // enforced on every request rather than just being available.
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
   ],
 })
-export class AppModule implements NestModule {
-  configure(consumer: MiddlewareConsumer) {
-    consumer.apply(CorrelationIDMiddleware).forRoutes('*');
-  }
-}
+export class AppModule {}

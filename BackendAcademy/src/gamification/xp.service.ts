@@ -11,9 +11,21 @@ const XP_BY_EVENT: Record<XpEventType, number> = {
   'contribution.created': 25,
 };
 
+function normalizeToUtcIso(input?: string | Date | null): string {
+  if (input === undefined || input === null) {
+    return new Date().toISOString();
+  }
+  const date = input instanceof Date ? input : new Date(input);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error('Invalid timestamp: ' + String(input));
+  }
+  return date.toISOString();
+}
+
 @Injectable()
 export class XpService implements OnModuleInit, OnModuleDestroy {
   private readonly ledger = new Map<string, XpLedgerEntry>();
+  private readonly processedEventIds = new Set<string>();
   private subscription?: Subscription;
   private currentLearnerId?: string;
 
@@ -67,16 +79,17 @@ export class XpService implements OnModuleInit, OnModuleDestroy {
   }
 
   award(event: XpEvent): XpLedgerEntry | null {
-    if (this.ledger.has(event.eventId)) {
+    if (this.processedEventIds.has(event.eventId)) {
       return null;
     }
 
     const entry: XpLedgerEntry = {
       ...event,
       points: XP_BY_EVENT[event.type],
-      occurredAt: event.occurredAt ?? new Date().toISOString(),
+      occurredAt: normalizeToUtcIso(event.occurredAt),
       awardedAt: new Date().toISOString(),
     };
+    this.processedEventIds.add(event.eventId);
     this.ledger.set(event.eventId, entry);
     return entry;
   }

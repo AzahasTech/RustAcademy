@@ -1,92 +1,44 @@
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
-  ArrayMaxSize,
+  ArrayUnique,
   IsArray,
-  IsEnum,
   IsNotEmpty,
-  IsNumber,
   IsOptional,
   IsString,
   MaxLength,
-  MinLength,
 } from 'class-validator';
-import { CourseLevel } from '../interfaces/course-level.enum';
-
-/** Shared bounds for canonical course taxonomy (see BA-047). */
-export const COURSE_TITLE_MIN_LENGTH = 3;
-export const COURSE_TITLE_MAX_LENGTH = 120;
-export const COURSE_DESCRIPTION_MAX_LENGTH = 4000;
-export const COURSE_TAXONOMY_ITEM_MAX_LENGTH = 60;
-export const COURSE_TAXONOMY_MAX_ITEMS = 20;
 
 export class CreateCourseDto {
+  @ApiProperty({ example: 'ownership-101', description: 'Unique course identifier (slug-style)' })
   @IsString()
   @IsNotEmpty()
-  @MinLength(COURSE_TITLE_MIN_LENGTH)
-  @MaxLength(COURSE_TITLE_MAX_LENGTH)
+  courseId: string;
+
+  @ApiProperty({ example: 'Ownership in Rust' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(200)
   title: string;
 
+  @ApiProperty({ example: 'Learn the ownership model that makes Rust memory-safe.' })
   @IsString()
   @IsNotEmpty()
-  @MaxLength(COURSE_DESCRIPTION_MAX_LENGTH)
+  @MaxLength(2000)
   description: string;
 
-  @IsEnum(CourseLevel)
-  level: CourseLevel;
-
-  @IsNumber()
-  order: number;
-
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(100)
-  learningPathId: string;
-
-  @IsNumber()
-  duration: number;
-
-  @IsOptional()
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(COURSE_TAXONOMY_ITEM_MAX_LENGTH)
-  category?: string;
-
+  /**
+   * courseIds that must be completed before a learner may enrol.
+   * Omit or pass `[]` for a course with no prerequisites.
+   */
+  @ApiPropertyOptional({
+    type: [String],
+    example: ['intro-rust-101'],
+    description: 'courseIds that must be completed before enrolling in this course',
+  })
   @IsOptional()
   @IsArray()
-  @ArrayMaxSize(COURSE_TAXONOMY_MAX_ITEMS)
   @IsString({ each: true })
   @IsNotEmpty({ each: true })
-  @MinLength(1, { each: true })
-  @MaxLength(COURSE_TAXONOMY_ITEM_MAX_LENGTH, { each: true })
-  categories?: string[];
-
-  @IsOptional()
-  @IsArray()
-  @ArrayMaxSize(COURSE_TAXONOMY_MAX_ITEMS)
-  @IsString({ each: true })
-  @IsNotEmpty({ each: true })
-  @MinLength(1, { each: true })
-  @MaxLength(COURSE_TAXONOMY_ITEM_MAX_LENGTH, { each: true })
-  tags?: string[];
-
-  @IsOptional()
-  @IsArray()
-  @ArrayMaxSize(COURSE_TAXONOMY_MAX_ITEMS)
-  @IsString({ each: true })
-  @IsNotEmpty({ each: true })
-  @MinLength(1, { each: true })
-  @MaxLength(COURSE_TAXONOMY_ITEM_MAX_LENGTH, { each: true })
-  prerequisites?: string[];
-
-  @IsOptional()
-  @IsArray()
-  @ArrayMaxSize(COURSE_TAXONOMY_MAX_ITEMS)
-  @IsString({ each: true })
-  @IsNotEmpty({ each: true })
-  @MinLength(1, { each: true })
-  @MaxLength(COURSE_TAXONOMY_ITEM_MAX_LENGTH, { each: true })
-  skills?: string[];
-
-  @IsOptional()
-  @IsNumber()
-  xpReward?: number;
+  @ArrayUnique()
+  prerequisiteCourseIds?: string[];
 }

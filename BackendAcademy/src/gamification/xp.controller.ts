@@ -1,13 +1,56 @@
-import { BadRequestException, Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { DomainEventBus } from './domain-event-bus';
-const XP_AWARD_POLICY: Record<string, number> = {
-  lesson_completed: 10,
-  quiz_passed: 20,
-  course_completed: 100,
-};
-import { PublishXpEventDto } from './dto/publish-xp-event.dto';
+import { PublishXpEventDto, XP_AWARD_POLICY } from './dto/publish-xp-event.dto';
 import { XpService } from './xp.service';
+
+export const XP_HISTORY_DEFAULT_LIMIT = 20;
+export const XP_HISTORY_MAX_LIMIT = 100;
+
+export interface XpHistoryQuery {
+  limit?: number | string;
+  cursor?: string;
+}
+
+export interface XpHistoryResult {
+  items: unknown[];
+  limit: number;
+  nextCursor: string | null;
+}
+
+function parseLimit(raw: number | string | undefined): number {
+  if (raw === undefined) {
+    return XP_HISTORY_DEFAULT_LIMIT;
+  }
+
+  const limit = typeof raw === 'number' ? raw : Number(raw);
+
+  if (!Number.isInteger(limit) || limit < 1 || limit > XP_HISTORY_MAX_LIMIT) {
+    throw new BadRequestException({
+      error: `"limit" must be an integer between 1 and ${XP_HISTORY_MAX_LIMIT}.`,
+      code: 'INVALID_XP_HISTORY_LIMIT',
+    });
+  }
+
+  return limit;
+}
+
+function decodeCursor(cursor: string | undefined): number {
+  if (cursor === undefined || cursor === '') {
+    return 0;
+  }
+
+  const offset = Number(cursor);
+
+  if (!Number.isInteger(offset) || offset < 0) {
+    throw new BadRequestException({
+      error: '"cursor" must be a non-negative integer offset.',
+      code: 'INVALID_XP_HISTORY_CURSOR',
+    });
+  }
+
+  return offset;
+}
 
 @ApiTags('xp')
 @Controller('v1/xp')
@@ -42,6 +85,19 @@ export class XpController {
 
     this.eventBus.publish(event);
     return { accepted: true, eventId: event.eventId, totalXp: this.xpService.getBalance(event.userId) };
+  }
+
+  @Get(':userId/history')
+  @ApiOperation({ summary: 'Get a bounded, paginated XP ledge history' })
+  getHistory(@Param('userId') userId: string, @Query() query: XpHistoryQuery): XpHistoryResult {
+    const limit = parseLimit(query.limit);
+    const offset = decodeCursor(query.cursor);
+    const ledger = this.xpService.getLedger(userId);
+    const items = ledger.slice(offset, offset + limit);
+    const nextOffset = offset + items.length;
+    const nextCursor = nextOffset < ledger.length ? String(nextOffset) : null;
+
+    return { items, limit, nextCursor };
   }
 
   @Get(':userId')
